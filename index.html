@@ -772,7 +772,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
         <div className="card-title">{title}</div>
         <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
       </div>
-      <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem',position:'relative'}}>
+      <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem'}}>
         <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:'block',overflow:'visible'}}
           onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
           <defs>
@@ -831,14 +831,17 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
         {/* Tooltip box */}
         {tooltip && (
           <div style={{
-            position:'absolute', top:PT+8, left: tooltip.x > W*0.6 ? 'auto' : PL+8,
-            right: tooltip.x > W*0.6 ? PR+8 : 'auto',
-            background:'var(--bg-secondary)', border:'1px solid var(--border-color)',
-            borderRadius:8, padding:'8px 12px', fontSize:'.8125rem', pointerEvents:'none',
-            boxShadow:'var(--shadow-md)', zIndex:10,
+            marginTop:'.625rem',
+            display:'flex',
+            alignItems:'center',
+            justifyContent:'space-between',
+            gap:'.75rem',
+            borderTop:'1px solid var(--border-color)',
+            paddingTop:'.625rem',
+            fontSize:'.8125rem',
           }}>
-            <div style={{color:'var(--text-secondary)',marginBottom:3,fontSize:'.75rem'}}>{fmtDate(tooltip.date)}</div>
-            <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600}}>{formatTooltip(tooltip.val)}</div>
+            <div style={{color:'var(--text-secondary)',fontSize:'.75rem',whiteSpace:'nowrap'}}>{fmtDate(tooltip.date)}</div>
+            <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600,textAlign:'right'}}>{formatTooltip(tooltip.val)}</div>
           </div>
         )}
       </div>
