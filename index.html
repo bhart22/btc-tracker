@@ -17,6 +17,7 @@
     const GDriveSync = {
       tokenClient: null,
       accessToken: null,
+      tokenExpiry: null,
       fileId: null,
       _initPromise: null,
       
@@ -28,48 +29,83 @@
               this.tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: GDRIVE_CLIENT_ID,
                 scope: GDRIVE_SCOPE,
-                callback: () => {}, // overridden per-call
+                callback: () => {},
               });
+              // Restore cached token
+              try {
+                const cached = JSON.parse(localStorage.getItem('btc-gtoken')||'null');
+                if(cached && cached.token && cached.expiry > Date.now()) {
+                  this.accessToken = cached.token;
+                  this.tokenExpiry = cached.expiry;
+                }
+              } catch {}
               resolve(true);
             } else {
               setTimeout(check, 100);
             }
           };
           check();
-          // Timeout after 5s
           setTimeout(() => resolve(false), 5000);
         });
         return this._initPromise;
       },
 
-      requestToken() {
+      _cacheToken(token, expiresIn) {
+        this.accessToken = token;
+        // Google tokens typically expire in 3600s; cache with 5min buffer
+        this.tokenExpiry = Date.now() + ((expiresIn || 3600) - 300) * 1000;
+        localStorage.setItem('btc-gtoken', JSON.stringify({ token, expiry: this.tokenExpiry }));
+      },
+
+      _clearToken() {
+        this.accessToken = null;
+        this.tokenExpiry = null;
+        localStorage.removeItem('btc-gtoken');
+      },
+
+      isTokenValid() {
+        return this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry;
+      },
+
+      requestToken(interactive) {
         return new Promise((resolve, reject) => {
           if(!this.tokenClient) { reject(new Error('Not initialized')); return; }
           this.tokenClient.callback = (resp) => {
-            if(resp.error) { reject(resp); return; }
-            this.accessToken = resp.access_token;
+            if(resp.error) { this._clearToken(); reject(resp); return; }
+            this._cacheToken(resp.access_token, resp.expires_in);
             resolve(resp.access_token);
           };
-          this.tokenClient.error_callback = (err) => reject(err);
-          if(this.accessToken) {
-            this.tokenClient.requestAccessToken({ prompt: '' }); // silent re-auth
-          } else {
-            this.tokenClient.requestAccessToken({ prompt: 'consent' });
-          }
+          this.tokenClient.error_callback = (err) => { this._clearToken(); reject(err); };
+          // Use prompt:'' for silent, prompt:'consent' for interactive
+          this.tokenClient.requestAccessToken({ prompt: interactive ? 'consent' : '' });
         });
+      },
+
+      async ensureToken() {
+        if(this.isTokenValid()) return this.accessToken;
+        // Try silent re-auth first
+        try {
+          await this.requestToken(false);
+          return this.accessToken;
+        } catch {
+          // Silent failed — need interactive
+          this._clearToken();
+          throw new Error('token_expired');
+        }
       },
       
       async _fetch(url, opts={}) {
+        const token = await this.ensureToken();
         const r = await fetch(url, {
           ...opts,
-          headers: { 'Authorization': 'Bearer ' + this.accessToken, ...(opts.headers||{}) },
+          headers: { 'Authorization': 'Bearer ' + token, ...(opts.headers||{}) },
         });
         if(r.status === 401) {
-          // Token expired, refresh
-          await this.requestToken();
+          this._clearToken();
+          const newToken = await this.ensureToken();
           return fetch(url, {
             ...opts,
-            headers: { 'Authorization': 'Bearer ' + this.accessToken, ...(opts.headers||{}) },
+            headers: { 'Authorization': 'Bearer ' + newToken, ...(opts.headers||{}) },
           });
         }
         return r;
@@ -88,7 +124,7 @@
       },
       
       async pull() {
-        if(!this.accessToken) await this.requestToken();
+        await this.ensureToken();
         const file = await this.findFile();
         if(!file) return null;
         const r = await this._fetch(
@@ -98,40 +134,47 @@
       },
       
       async push(data) {
-        if(!this.accessToken) await this.requestToken();
+        await this.ensureToken();
         const body = JSON.stringify(data);
         
         if(this.fileId) {
-          // Update existing
           await this._fetch(
             `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media`,
             { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
           );
         } else {
-          // Create new
-          const metadata = { name: GDRIVE_FILENAME, parents: ['appDataFolder'] };
-          const form = new FormData();
-          form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-          form.append('file', new Blob([body], { type: 'application/json' }));
-          const r = await this._fetch(
-            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-            { method: 'POST', body: form }
-          );
-          const res = await r.json();
-          this.fileId = res.id;
+          // Find existing file first (in case fileId was lost on reload)
+          await this.findFile();
+          if(this.fileId) {
+            await this._fetch(
+              `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media`,
+              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
+            );
+          } else {
+            const metadata = { name: GDRIVE_FILENAME, parents: ['appDataFolder'] };
+            const form = new FormData();
+            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+            form.append('file', new Blob([body], { type: 'application/json' }));
+            const r = await this._fetch(
+              'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+              { method: 'POST', body: form }
+            );
+            const res = await r.json();
+            this.fileId = res.id;
+          }
         }
         return true;
       },
       
       async signOut() {
         if(this.accessToken) {
-          google.accounts.oauth2.revoke(this.accessToken);
-          this.accessToken = null;
+          try { google.accounts.oauth2.revoke(this.accessToken); } catch {}
+          this._clearToken();
           this.fileId = null;
         }
       },
       
-      isSignedIn() { return !!this.accessToken; }
+      isSignedIn() { return this.isTokenValid(); }
     };
   </script>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -744,7 +787,7 @@ function App() {
     try {
       const ready = await GDriveSync.init();
       if(!ready) { setSyncState('error'); showToast('Google Sign-In failed to load'); return; }
-      await GDriveSync.requestToken();
+      await GDriveSync.requestToken(true); // interactive = true, always show consent
       // Get user info
       try {
         const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -760,7 +803,6 @@ function App() {
       if(remote && remote.transactions) {
         const localMod = localStorage.getItem('btc-last-modified') || '0';
         const remoteMod = remote.lastModified || '0';
-        // If remote is newer, use it
         if(remoteMod > localMod || !localStorage.getItem('btc-tx-v2')) {
           setTransactions(remote.transactions);
           setWallets(remote.wallets || []);
@@ -773,13 +815,13 @@ function App() {
           localStorage.setItem('btc-last-modified', remoteMod);
           showToast('Synced from Google Drive');
         } else {
-          // Local is newer, push to Drive
           const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
-          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: new Date().toISOString() });
+          const mod = new Date().toISOString();
+          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+          localStorage.setItem('btc-last-modified', mod);
           showToast('Pushed local data to Google Drive');
         }
       } else {
-        // No remote data, push local
         const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
         const mod = new Date().toISOString();
         await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
@@ -814,30 +856,34 @@ function App() {
     const savedUser = localStorage.getItem('btc-sync-user');
     if(savedUser) { try { setSyncUser(JSON.parse(savedUser)); } catch {} }
     if(wasEnabled) {
-      // Try silent re-auth
       (async () => {
-        setSyncState('syncing');
         try {
           const ready = await GDriveSync.init();
           if(!ready) { setSyncState('disconnected'); return; }
-          await GDriveSync.requestToken();
-          const remote = await GDriveSync.pull();
-          if(remote && remote.lastModified) {
-            const localMod = localStorage.getItem('btc-last-modified') || '0';
-            if(remote.lastModified > localMod) {
-              setTransactions(remote.transactions);
-              setWallets(remote.wallets || []);
-              if(remote.settings) {
-                setSettings(remote.settings);
-                localStorage.setItem('btc-settings', JSON.stringify(remote.settings));
+          // If we have a cached valid token, use it directly
+          if(GDriveSync.isTokenValid()) {
+            setSyncState('syncing');
+            const remote = await GDriveSync.pull();
+            if(remote && remote.lastModified) {
+              const localMod = localStorage.getItem('btc-last-modified') || '0';
+              if(remote.lastModified > localMod) {
+                setTransactions(remote.transactions);
+                setWallets(remote.wallets || []);
+                if(remote.settings) {
+                  setSettings(remote.settings);
+                  localStorage.setItem('btc-settings', JSON.stringify(remote.settings));
+                }
+                localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
+                localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
+                localStorage.setItem('btc-last-modified', remote.lastModified);
               }
-              localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
-              localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
-              localStorage.setItem('btc-last-modified', remote.lastModified);
             }
+            setSyncState('synced');
+            setLastSync(new Date());
+          } else {
+            // Token expired — show as disconnected, user can re-sign-in
+            setSyncState('disconnected');
           }
-          setSyncState('synced');
-          setLastSync(new Date());
         } catch(e) {
           console.error('Auto-reconnect failed:', e);
           setSyncState('disconnected');
