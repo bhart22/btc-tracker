@@ -112,56 +112,74 @@
       },
 
       async findFile() {
+        // Check cached fileId first
+        if(!this.fileId) {
+          try { this.fileId = localStorage.getItem('btc-gdrive-fileid') || null; } catch {}
+        }
         const r = await this._fetch(
           `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D'${GDRIVE_FILENAME}'&fields=files(id,name,modifiedTime)`
         );
         const data = await r.json();
+        console.log('[GDrive] findFile response:', data);
         if(data.files && data.files.length > 0) {
           this.fileId = data.files[0].id;
+          localStorage.setItem('btc-gdrive-fileid', this.fileId);
           return data.files[0];
         }
+        this.fileId = null;
+        localStorage.removeItem('btc-gdrive-fileid');
         return null;
       },
       
       async pull() {
         await this.ensureToken();
         const file = await this.findFile();
-        if(!file) return null;
+        if(!file) { console.log('[GDrive] pull: no file found'); return null; }
+        console.log('[GDrive] pull: reading file', this.fileId);
         const r = await this._fetch(
           `https://www.googleapis.com/drive/v3/files/${this.fileId}?alt=media`
         );
-        return await r.json();
+        if(!r.ok) { console.error('[GDrive] pull failed:', r.status, await r.text()); return null; }
+        const data = await r.json();
+        console.log('[GDrive] pull: got data with', data?.transactions?.length, 'transactions');
+        return data;
       },
       
       async push(data) {
         await this.ensureToken();
         const body = JSON.stringify(data);
+        console.log('[GDrive] push:', data?.transactions?.length, 'transactions');
+        
+        // Always search for existing file first
+        if(!this.fileId) await this.findFile();
         
         if(this.fileId) {
-          await this._fetch(
+          console.log('[GDrive] push: updating existing file', this.fileId);
+          const r = await this._fetch(
             `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media`,
             { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
           );
+          if(!r.ok) { console.error('[GDrive] push update failed:', r.status, await r.text()); throw new Error('push failed'); }
         } else {
-          // Find existing file first (in case fileId was lost on reload)
-          await this.findFile();
-          if(this.fileId) {
-            await this._fetch(
-              `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media`,
-              { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
-            );
-          } else {
-            const metadata = { name: GDRIVE_FILENAME, parents: ['appDataFolder'] };
-            const form = new FormData();
-            form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-            form.append('file', new Blob([body], { type: 'application/json' }));
-            const r = await this._fetch(
-              'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-              { method: 'POST', body: form }
-            );
-            const res = await r.json();
-            this.fileId = res.id;
-          }
+          console.log('[GDrive] push: creating new file');
+          const boundary = 'btc_boundary_' + Date.now();
+          const multipart = 
+            '--' + boundary + '\r\n' +
+            'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+            JSON.stringify({ name: GDRIVE_FILENAME, parents: ['appDataFolder'] }) + '\r\n' +
+            '--' + boundary + '\r\n' +
+            'Content-Type: application/json\r\n\r\n' +
+            body + '\r\n' +
+            '--' + boundary + '--';
+          const r = await this._fetch(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+            { method: 'POST', headers: { 'Content-Type': 'multipart/related; boundary=' + boundary }, body: multipart }
+          );
+          if(!r.ok) { console.error('[GDrive] push create failed:', r.status, await r.text()); throw new Error('push failed'); }
+          const res = await r.json();
+          this.fileId = res.id;
+          localStorage.setItem('btc-gdrive-fileid', this.fileId);
+          console.log('[GDrive] push: created file', this.fileId);
         }
         return true;
       },
@@ -171,6 +189,7 @@
           try { google.accounts.oauth2.revoke(this.accessToken); } catch {}
           this._clearToken();
           this.fileId = null;
+          localStorage.removeItem('btc-gdrive-fileid');
         }
       },
       
@@ -1727,7 +1746,7 @@ function App() {
       </main>
 
       <footer style={{textAlign:'center',padding:'.75rem 1rem',fontSize:'.6875rem',color:'var(--text-tertiary)',borderTop:'1px solid var(--border-color)',fontFamily:'JetBrains Mono,monospace'}}>
-        v3.20
+        v3.21
       </footer>
 
       {/* ── Add/Edit Transaction Modal ── */}
