@@ -565,18 +565,20 @@ function DashboardCharts({ transactions, wallets, btcPrice }) {
       }
 
       const totalBTC = runningBTC;
-      const avgCost = runningBTCForCost>0.00000001 ? totalCost/runningBTCForCost : 0;
-      const pt = { date:tx.date, btc:+totalBTC.toFixed(8), avgCost:+avgCost.toFixed(2) };
+      const avgCost = runningBTCForCost>0.00000001 ? totalCost/runningBTCForCost : null;
+      const pt = { date:tx.date, btc:+totalBTC.toFixed(8), avgCost:avgCost!==null ? +avgCost.toFixed(2) : null };
       const last = points[points.length-1];
       if(last && last.date===tx.date) points[points.length-1]=pt;
       else points.push(pt);
     });
-    // Trim leading zero points so chart starts when real activity begins
-    while(points.length > 1 && points[0].btc < 0.00000001 && points[0].avgCost < 0.01) {
+    // Trim leading zero-BTC points
+    while(points.length > 1 && points[0].btc < 0.00000001) {
       points.shift();
     }
     return points;
   }, [transactions, wallets]);
+
+  const costData = React.useMemo(() => chartData.filter(d=>d.avgCost!==null), [chartData]);
 
   if(!chartData.length) return null;
 
@@ -595,18 +597,18 @@ function DashboardCharts({ transactions, wallets, btcPrice }) {
         }}
         fillGradient={true}
       />
-      <SVGChart
-        data={chartData}
+      {costData.length > 1 && <SVGChart
+        data={costData}
         dataKey="avgCost"
         title="Average Cost Basis"
-        subtitle={'$'+Math.round(chartData[chartData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
+        subtitle={'$'+Math.round(costData[costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
         color="#2563eb"
         formatY={v=>'$'+Math.round(v/1000)+'k'}
         formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
         refLine={btcPrice}
         refLineColor="#16a34a"
         refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
-      />
+      />}
     </div>
   );
 }
