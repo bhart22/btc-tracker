@@ -1319,7 +1319,7 @@ function App() {
           <button className={`sidebar-theme-toggle ${theme}`} onClick={()=>setTheme(t=>t==='light'?'dark':'light')} title={theme==='light'?'Switch to dark mode':'Switch to light mode'}>
             <div className="toggle-knob"/>
           </button>
-          <span className="sidebar-theme-label">{theme==='light' ? 'Dark mode' : 'Light mode'}</span>
+          <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
         </div>
         <div className="sidebar-version">v3.23</div>
       </nav>
@@ -1339,7 +1339,7 @@ function App() {
             <button className={`sidebar-theme-toggle ${theme}`} onClick={()=>setTheme(t=>t==='light'?'dark':'light')} title={sidebarCollapsed?(theme==='light'?'Dark mode':'Light mode'):(theme==='light'?'Switch to dark mode':'Switch to light mode')}>
               <div className="toggle-knob"/>
             </button>
-            <span className="sidebar-theme-label">{theme==='light' ? 'Dark mode' : 'Light mode'}</span>
+            <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
           </div>
           <div className="sidebar-version">v3.23</div>
         </aside>
