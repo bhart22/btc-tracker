@@ -509,6 +509,7 @@ const Icon = {
   Menu: (s)=><svg {...sz} {...s}><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
   ChevronLeft: (s)=><svg {...sz} {...s}><polyline points="15 18 9 12 15 6"/></svg>,
   ChevronRight: (s)=><svg {...sz} {...s}><polyline points="9 18 15 12 9 6"/></svg>,
+  ChevronDown: (s)=><svg {...sz} {...s}><polyline points="6 9 12 15 18 9"/></svg>,
 };
 
 const NAV_ITEMS = [
@@ -768,6 +769,7 @@ function App() {
 
   const [walletForm, setWalletForm] = useState({name:'',type:'Exchange',address:''});
   const [showArchived, setShowArchived] = useState(false);
+  const [showTypeMapping, setShowTypeMapping] = useState(false);
 
   // Active wallets (not archived) vs all wallets (for stats)
   const activeWallets = useMemo(() => wallets.filter(w => !w.archived), [wallets]);
@@ -1588,52 +1590,93 @@ function App() {
 
         {/* ── EXPORT ── */}
         {tab==='export' && (
-          <div className="card">
-            <div className="card-header"><div className="card-title">Export for CoinLedger</div></div>
-            <div className="card-body">
-              <div className="info-banner">
-                <span style={{display:'flex',color:'var(--bitcoin-orange)'}}>{Icon.Link()}</span>
-                <div>Export as CSV in CoinLedger's Universal Manual Import format. <strong>Tip:</strong> Import directly without opening in Excel to avoid formatting issues.</div>
+          <>
+            {/* Backup & Restore */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Backup & Restore</div>
               </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:'1rem',marginTop:'.5rem'}}>
-                <div className="stat-card" style={{cursor:'pointer',border:'2px solid var(--bitcoin-orange)'}} onClick={exportNativeCSV}>
-                  <div className="stat-label" style={{color:'var(--bitcoin-orange)'}}>🔒 Tracker Backup</div>
-                  <div className="stat-value" style={{fontSize:'1.5rem'}}>{transactions.length}</div>
-                  <div className="stat-sub">Native format — use this to reimport</div>
-                </div>
-                <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>exportCSV(null)}>
-                  <div className="stat-label">All Transactions</div>
-                  <div className="stat-value" style={{fontSize:'1.5rem'}}>{transactions.length}</div>
-                  <div className="stat-sub">CoinLedger format — all years</div>
-                </div>
-                {years.map(y=>{
-                  const count = transactions.filter(t=>t.date.startsWith(y)).length;
-                  return (
-                    <div key={y} className="stat-card" style={{cursor:'pointer'}} onClick={()=>exportCSV(y)}>
-                      <div className="stat-label">{y}</div>
-                      <div className="stat-value" style={{fontSize:'1.5rem'}}>{count}</div>
-                      <div className="stat-sub">Click to export {y}</div>
+              <div className="card-body">
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:'1rem'}}>
+                  <div style={{flex:1,minWidth:200}}>
+                    <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem'}}>Download Tracker Backup</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',lineHeight:1.6}}>
+                      Export all {transactions.length} transactions in native format. Use this file to restore your data via Settings → Import.
                     </div>
-                  );
-                })}
-              </div>
-              <div style={{marginTop:'1.5rem'}}>
-                <div style={{fontSize:'.8125rem',fontWeight:600,marginBottom:'.625rem',color:'var(--text-secondary)'}}>TYPE MAPPING</div>
-                <table style={{width:'100%',fontSize:'.8125rem'}}>
-                  <thead>
-                    <tr><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Your Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>CoinLedger Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Notes</th></tr>
-                  </thead>
-                  <tbody>
-                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-buy">Buy</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>USD → BTC, price computed</td></tr>
-                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-sell">Sell</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>BTC → USD, price computed</td></tr>
-                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-transfer">Transfer</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal + Deposit</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Two rows: sender Withdrawal + receiver Deposit. API-managed wallets (Coinbase) skip Withdrawal row.</td></tr>
-                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-consolidation">Consolidation</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal (fee only)</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>UTXO consolidation: BTC stays in same wallet, only miner fee is deducted. Exported as a fee-only Withdrawal.</td></tr>
-                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-reward">Reward</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Income</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Cashback, staking, etc.</td></tr>
-                  </tbody>
-                </table>
+                  </div>
+                  <button className="btn btn-primary" onClick={exportNativeCSV} style={{display:'inline-flex',alignItems:'center',gap:'.5rem'}}>
+                    {Icon.Download({width:14,height:14})} Download Backup
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+
+            {/* Tax Export */}
+            <div className="card">
+              <div className="card-header"><div className="card-title">Tax Export — CoinLedger</div></div>
+              <div className="card-body">
+                <div className="info-banner">
+                  <span style={{display:'flex',color:'var(--bitcoin-orange)'}}>{Icon.Link()}</span>
+                  <div>Export as CSV in CoinLedger's Universal Manual Import format. <strong>Tip:</strong> Import directly without opening in Excel to avoid formatting issues.</div>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:'1rem',marginTop:'.75rem'}}>
+                  <div className="stat-card" style={{cursor:'pointer',transition:'border-color .15s'}} onClick={()=>exportCSV(null)}
+                    onMouseEnter={e=>e.currentTarget.style.borderColor='var(--bitcoin-orange)'}
+                    onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border-color)'}>
+                    <div className="stat-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                      {Icon.Download({width:11,height:11})} All Years
+                    </div>
+                    <div className="stat-value" style={{fontSize:'1.5rem'}}>{transactions.length}</div>
+                    <div className="stat-sub">CoinLedger format</div>
+                  </div>
+                  {years.map(y=>{
+                    const yearTxs = transactions.filter(t=>t.date.startsWith(y));
+                    const count = yearTxs.length;
+                    const dates = yearTxs.map(t=>t.date).sort();
+                    const rangeStr = dates.length ? `${fmtDate(dates[0])} — ${fmtDate(dates[dates.length-1])}` : '';
+                    return (
+                      <div key={y} className="stat-card" style={{cursor:'pointer',transition:'border-color .15s'}} onClick={()=>exportCSV(y)}
+                        onMouseEnter={e=>e.currentTarget.style.borderColor='var(--bitcoin-orange)'}
+                        onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border-color)'}>
+                        <div className="stat-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                          {Icon.Download({width:11,height:11})} {y}
+                        </div>
+                        <div className="stat-value" style={{fontSize:'1.5rem'}}>{count}</div>
+                        <div className="stat-sub">{rangeStr}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Collapsible type mapping */}
+                <div style={{marginTop:'1.5rem',borderTop:'1px solid var(--border-color)',paddingTop:'1rem'}}>
+                  <button
+                    onClick={()=>setShowTypeMapping(s=>!s)}
+                    style={{display:'flex',alignItems:'center',gap:'.5rem',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontSize:'.8125rem',fontWeight:600,color:'var(--text-secondary)',padding:0,transition:'color .15s'}}
+                    onMouseEnter={e=>e.currentTarget.style.color='var(--text-primary)'}
+                    onMouseLeave={e=>e.currentTarget.style.color='var(--text-secondary)'}
+                  >
+                    {showTypeMapping ? Icon.ChevronDown({width:13,height:13}) : Icon.ChevronRight({width:13,height:13})}
+                    TYPE MAPPING
+                  </button>
+                  {showTypeMapping && (
+                    <table style={{width:'100%',fontSize:'.8125rem',marginTop:'.75rem'}}>
+                      <thead>
+                        <tr><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Your Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>CoinLedger Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Notes</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td style={{padding:'.5rem'}}><span className="badge badge-buy">Buy</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>USD → BTC, price computed</td></tr>
+                        <tr><td style={{padding:'.5rem'}}><span className="badge badge-sell">Sell</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>BTC → USD, price computed</td></tr>
+                        <tr><td style={{padding:'.5rem'}}><span className="badge badge-transfer">Transfer</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal + Deposit</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Two rows: sender Withdrawal + receiver Deposit</td></tr>
+                        <tr><td style={{padding:'.5rem'}}><span className="badge badge-consolidation">Consolidation</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal (fee only)</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>UTXO consolidation — only miner fee deducted</td></tr>
+                        <tr><td style={{padding:'.5rem'}}><span className="badge badge-reward">Reward</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Income</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Cashback, staking, etc.</td></tr>
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            </div>
+          </>
         )}
 
         {/* ── SETTINGS ── */}
