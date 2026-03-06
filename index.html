@@ -206,6 +206,7 @@
       --text-primary: #0a0a0a; --text-secondary: #525252; --text-tertiary: #a3a3a3;
       --border-color: #e5e5e5; --border-hover: #d4d4d4;
       --bitcoin-orange: #f7931a; --bitcoin-light: #fef3e8;
+      --main-surface: #f7efe6; --main-dot-color: rgba(247,147,26,0.2);
       --green: #16a34a; --green-light: #dcfce7; --red: #dc2626; --red-light: #fee2e2;
       --blue: #2563eb; --blue-light: #dbeafe; --purple: #7c3aed; --purple-light: #ede9fe;
       --shadow-sm: 0 1px 2px rgba(0,0,0,0.04); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
@@ -215,6 +216,7 @@
       --bg-primary: #0a0a0a; --bg-secondary: #141414; --bg-tertiary: #1e1e1e;
       --text-primary: #f5f5f5; --text-secondary: #a3a3a3; --text-tertiary: #525252;
       --border-color: #2a2a2a; --border-hover: #404040;
+      --main-surface: #120d08; --main-dot-color: rgba(247,147,26,0.65);
       --bitcoin-light: #2a1800; --green-light: #0f2d1a; --red-light: #2d0f0f;
       --blue-light: #0f1d3d; --purple-light: #1e1030;
       --shadow-sm: 0 1px 2px rgba(0,0,0,0.4); --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
@@ -274,7 +276,13 @@
     .mobile-drawer-nav { flex:1; padding:.75rem; display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
 
     /* Main */
-    .main { flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; min-width:0; overflow-x:hidden; }
+    .main {
+      flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; min-width:0; overflow-x:hidden;
+      background-color:var(--main-surface);
+      background-image:radial-gradient(circle, var(--main-dot-color) 1.2px, transparent 1.2px);
+      background-size:20px 20px;
+      background-position:10px 10px;
+    }
 
     /* Buttons */
     .btn { padding:.5rem 1rem; border-radius:8px; font-size:.8125rem; font-weight:500; border:none; cursor:pointer; transition:all .15s; font-family:inherit; white-space:nowrap; display:inline-flex; align-items:center; gap:.375rem; }
