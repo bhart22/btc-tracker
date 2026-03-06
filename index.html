@@ -224,8 +224,8 @@
     .app { min-height:100vh; display:flex; flex-direction:column; }
 
     /* Header */
-    .header { background:var(--bg-secondary); border-bottom:1px solid var(--border-color); padding:.875rem 1.5rem; position:sticky; top:0; z-index:200; box-shadow:var(--shadow-sm); }
-    .header-inner { max-width:1600px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+    .header { background:var(--bg-secondary); border-bottom:1px solid var(--border-color); padding:.875rem 1.5rem; position:sticky; top:0; z-index:200; box-shadow:var(--shadow-sm); display:flex; align-items:center; gap:.75rem; }
+    .header-inner { flex:1; display:flex; justify-content:space-between; align-items:center; gap:1rem; }
     .logo { display:flex; align-items:center; gap:.625rem; text-decoration:none; color:inherit; }
     .logo-icon { width:30px; height:30px; background:var(--bitcoin-orange); border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; font-size:16px; flex-shrink:0; }
     .logo-text { font-size:1.0625rem; font-weight:600; letter-spacing:-.02em; white-space:nowrap; }
@@ -1258,14 +1258,14 @@ function App() {
     <div className="app">
       {/* Header */}
       <header className="header">
+        <button className="hamburger" onClick={()=>setMobileMenuOpen(true)}>
+          {Icon.Menu({width:18,height:18})}
+        </button>
+        <button className="sidebar-collapse-btn desktop-only" onClick={()=>setSidebarCollapsed(c=>!c)} title={sidebarCollapsed?'Expand sidebar':'Collapse sidebar'}>
+          {sidebarCollapsed ? Icon.ChevronRight({width:16,height:16}) : Icon.ChevronLeft({width:16,height:16})}
+        </button>
         <div className="header-inner">
           <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
-            <button className="hamburger" onClick={()=>setMobileMenuOpen(true)}>
-              {Icon.Menu({width:18,height:18})}
-            </button>
-            <button className="sidebar-collapse-btn desktop-only" onClick={()=>setSidebarCollapsed(c=>!c)} title={sidebarCollapsed?'Expand sidebar':'Collapse sidebar'}>
-              {sidebarCollapsed ? Icon.ChevronRight({width:16,height:16}) : Icon.ChevronLeft({width:16,height:16})}
-            </button>
             <div className="logo">
               <div className="logo-icon">₿</div>
               <span className="logo-text">Bitcoin Tracker</span>
