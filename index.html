@@ -222,7 +222,7 @@
     }
     body { font-family:'IBM Plex Sans',sans-serif; background:var(--bg-primary); color:var(--text-primary); line-height:1.6; -webkit-font-smoothing:antialiased; transition:background .3s,color .3s; }
     .app { min-height:100vh; display:flex; flex-direction:column; }
-    
+
     /* Header */
     .header { background:var(--bg-secondary); border-bottom:1px solid var(--border-color); padding:.875rem 1.5rem; position:sticky; top:0; z-index:200; box-shadow:var(--shadow-sm); }
     .header-inner { max-width:1600px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:1rem; }
@@ -230,17 +230,39 @@
     .logo-icon { width:30px; height:30px; background:var(--bitcoin-orange); border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; font-size:16px; flex-shrink:0; }
     .logo-text { font-size:1.0625rem; font-weight:600; letter-spacing:-.02em; white-space:nowrap; }
     .header-actions { display:flex; gap:.5rem; align-items:center; }
-    
-    /* Nav tabs */
-    .nav-tabs { display:flex; gap:0; border-bottom:2px solid var(--border-color); margin-bottom:1.5rem; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
-    .nav-tabs::-webkit-scrollbar { display:none; }
-    .nav-tab { flex-shrink:0; }
-    .nav-tab { padding:.625rem 1.25rem; font-size:.875rem; font-weight:500; border:none; background:none; cursor:pointer; color:var(--text-secondary); border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; white-space:nowrap; font-family:inherit; }
-    .nav-tab:hover { color:var(--text-primary); }
-    .nav-tab.active { color:var(--bitcoin-orange); border-bottom-color:var(--bitcoin-orange); font-weight:600; }
+    .hamburger { display:none; width:34px; height:34px; border-radius:7px; background:var(--bg-tertiary); border:1px solid var(--border-color); align-items:center; justify-content:center; cursor:pointer; color:var(--text-primary); font-size:1rem; }
+    .hamburger:hover { border-color:var(--border-hover); }
+
+    /* App body: sidebar + main */
+    .app-body { display:flex; flex:1; }
+
+    /* Sidebar */
+    .sidebar { width:220px; background:var(--bg-secondary); border-right:1px solid var(--border-color); display:flex; flex-direction:column; flex-shrink:0; transition:width .2s ease; overflow:hidden; height:calc(100vh - 53px); position:sticky; top:53px; }
+    .sidebar.collapsed { width:56px; }
+    .sidebar-nav { flex:1; padding:.5rem; display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
+    .sidebar-item { display:flex; align-items:center; gap:.75rem; padding:.625rem .75rem; border-radius:8px; border:none; background:none; cursor:pointer; color:var(--text-secondary); font-size:.875rem; font-weight:500; font-family:inherit; transition:all .15s; white-space:nowrap; width:100%; text-align:left; }
+    .sidebar-item:hover { background:var(--bg-tertiary); color:var(--text-primary); }
+    .sidebar-item.active { background:var(--bitcoin-light); color:var(--bitcoin-orange); font-weight:600; }
+    .sidebar-item svg { flex-shrink:0; }
+    .sidebar-item-label { opacity:1; transition:opacity .15s; }
+    .sidebar.collapsed .sidebar-item-label { opacity:0; width:0; overflow:hidden; }
+    .sidebar.collapsed .sidebar-item { justify-content:center; padding:.625rem; }
+    .sidebar-toggle { padding:.5rem; border-top:1px solid var(--border-color); display:flex; justify-content:center; }
+    .sidebar-toggle-btn { width:100%; padding:.5rem; border-radius:7px; background:none; border:1px solid var(--border-color); cursor:pointer; color:var(--text-tertiary); display:flex; align-items:center; justify-content:center; transition:all .15s; }
+    .sidebar-toggle-btn:hover { border-color:var(--border-hover); color:var(--text-primary); background:var(--bg-tertiary); }
+    .sidebar-version { padding:.375rem .75rem; font-size:.6875rem; color:var(--text-tertiary); font-family:'JetBrains Mono',monospace; text-align:center; border-top:1px solid var(--border-color); }
+    .sidebar.collapsed .sidebar-version { font-size:.5625rem; }
+
+    /* Mobile drawer overlay */
+    .drawer-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); backdrop-filter:blur(4px); z-index:300; animation:fadeIn .2s ease; }
+    .drawer-overlay.open { display:block; }
+    .mobile-drawer { position:fixed; top:0; left:-280px; width:280px; height:100%; background:var(--bg-secondary); z-index:310; box-shadow:var(--shadow-lg); display:flex; flex-direction:column; transition:left .25s ease; }
+    .mobile-drawer.open { left:0; }
+    .mobile-drawer-header { padding:1rem 1.25rem; border-bottom:1px solid var(--border-color); display:flex; align-items:center; justify-content:space-between; }
+    .mobile-drawer-nav { flex:1; padding:.75rem; display:flex; flex-direction:column; gap:2px; overflow-y:auto; }
 
     /* Main */
-    .main { flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; }
+    .main { flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; min-width:0; overflow-x:hidden; }
 
     /* Buttons */
     .btn { padding:.5rem 1rem; border-radius:8px; font-size:.8125rem; font-weight:500; border:none; cursor:pointer; transition:all .15s; font-family:inherit; white-space:nowrap; display:inline-flex; align-items:center; gap:.375rem; }
@@ -383,6 +405,8 @@
       .stats-grid { grid-template-columns:1fr 1fr; }
       .filter-bar { gap:.5rem; }
       .desktop-only { display:none !important; }
+      .sidebar { display:none; }
+      .hamburger { display:flex; }
     }
     @media(max-width:480px) {
       .stats-grid { grid-template-columns:1fr; }
@@ -473,7 +497,23 @@ const Icon = {
   Check: (s)=><svg {...sz} {...s}><polyline points="20 6 9 17 4 12"/></svg>,
   User: (s)=><svg {...sz} {...s}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
   LogOut: (s)=><svg {...sz} {...s}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+  Home: (s)=><svg {...sz} {...s}><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
+  List: (s)=><svg {...sz} {...s}><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
+  Wallet: (s)=><svg {...sz} {...s}><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>,
+  Download: (s)=><svg {...sz} {...s}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+  Settings: (s)=><svg {...sz} {...s}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+  Menu: (s)=><svg {...sz} {...s}><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+  ChevronLeft: (s)=><svg {...sz} {...s}><polyline points="15 18 9 12 15 6"/></svg>,
+  ChevronRight: (s)=><svg {...sz} {...s}><polyline points="9 18 15 12 9 6"/></svg>,
 };
+
+const NAV_ITEMS = [
+  { key:'dashboard', label:'Dashboard', icon:'Home' },
+  { key:'transactions', label:'Transactions', icon:'List' },
+  { key:'wallets', label:'Wallets', icon:'Wallet' },
+  { key:'export', label:'Export', icon:'Download' },
+  { key:'settings', label:'Settings', icon:'Settings' },
+];
 
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
 function DashboardCharts({ transactions, wallets, btcPrice }) {
@@ -716,6 +756,8 @@ function App() {
     });
   };
   const [tab, setTab] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('btc-sidebar-collapsed') === 'true');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
@@ -780,6 +822,9 @@ function App() {
     localStorage.setItem('btc-theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+  useEffect(() => {
+    localStorage.setItem('btc-sidebar-collapsed', sidebarCollapsed);
+  }, [sidebarCollapsed]);
 
   // Apply theme on mount
   useEffect(() => {
@@ -1200,9 +1245,14 @@ function App() {
       {/* Header */}
       <header className="header">
         <div className="header-inner">
-          <div className="logo">
-            <div className="logo-icon">₿</div>
-            <span className="logo-text">Bitcoin Tracker</span>
+          <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
+            <button className="hamburger" onClick={()=>setMobileMenuOpen(true)}>
+              {Icon.Menu({width:18,height:18})}
+            </button>
+            <div className="logo">
+              <div className="logo-icon">₿</div>
+              <span className="logo-text">Bitcoin Tracker</span>
+            </div>
           </div>
           <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
             {/* Sync status */}
@@ -1233,15 +1283,47 @@ function App() {
         </div>
       </header>
 
-      <main className="main">
-        <nav className="nav-tabs">
-          {['dashboard','transactions','wallets','export','settings'].map(t=>(
-            <button key={t} className={`nav-tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>
-              {t.charAt(0).toUpperCase()+t.slice(1)}
+      {/* Mobile drawer */}
+      <div className={`drawer-overlay ${mobileMenuOpen?'open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
+      <nav className={`mobile-drawer ${mobileMenuOpen?'open':''}`}>
+        <div className="mobile-drawer-header">
+          <div className="logo">
+            <div className="logo-icon">₿</div>
+            <span className="logo-text">Bitcoin Tracker</span>
+          </div>
+          <button className="btn-icon" onClick={()=>setMobileMenuOpen(false)}>{Icon.X()}</button>
+        </div>
+        <div className="mobile-drawer-nav">
+          {NAV_ITEMS.map(item=>(
+            <button key={item.key} className={`sidebar-item ${tab===item.key?'active':''}`} onClick={()=>{setTab(item.key);setMobileMenuOpen(false);}}>
+              {Icon[item.icon]({width:18,height:18})}
+              <span>{item.label}</span>
             </button>
           ))}
-        </nav>
+        </div>
+        <div className="sidebar-version">v3.21</div>
+      </nav>
 
+      <div className="app-body">
+        {/* Desktop sidebar */}
+        <aside className={`sidebar ${sidebarCollapsed?'collapsed':''}`}>
+          <nav className="sidebar-nav">
+            {NAV_ITEMS.map(item=>(
+              <button key={item.key} className={`sidebar-item ${tab===item.key?'active':''}`} onClick={()=>setTab(item.key)} title={sidebarCollapsed?item.label:undefined}>
+                {Icon[item.icon]({width:18,height:18})}
+                <span className="sidebar-item-label">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="sidebar-version">v3.21</div>
+          <div className="sidebar-toggle">
+            <button className="sidebar-toggle-btn" onClick={()=>setSidebarCollapsed(c=>!c)} title={sidebarCollapsed?'Expand sidebar':'Collapse sidebar'}>
+              {sidebarCollapsed ? Icon.ChevronRight({width:16,height:16}) : Icon.ChevronLeft({width:16,height:16})}
+            </button>
+          </div>
+        </aside>
+
+        <main className="main">
         {/* ── DASHBOARD ── */}
         {tab==='dashboard' && (
           <>
@@ -1745,10 +1827,7 @@ function App() {
           </>
         )}
       </main>
-
-      <footer style={{textAlign:'center',padding:'.75rem 1rem',fontSize:'.6875rem',color:'var(--text-tertiary)',borderTop:'1px solid var(--border-color)',fontFamily:'JetBrains Mono,monospace'}}>
-        v3.21
-      </footer>
+      </div>{/* end app-body */}
 
       {/* ── Add/Edit Transaction Modal ── */}
       {showModal && (
