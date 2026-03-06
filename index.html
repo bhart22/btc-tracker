@@ -247,7 +247,7 @@
     .sidebar-item { display:flex; align-items:center; gap:.75rem; padding:.625rem .75rem; border-radius:8px; border:none; background:none; cursor:pointer; color:var(--text-secondary); font-size:.875rem; font-weight:500; font-family:inherit; transition:all .15s; white-space:nowrap; width:100%; text-align:left; }
     .sidebar-item:hover { background:var(--bg-tertiary); color:var(--text-primary); }
     .sidebar-item.active { background:var(--bitcoin-light); color:var(--bitcoin-orange); font-weight:600; }
-    .sidebar-item svg { flex-shrink:0; }
+    .sidebar-item svg { flex-shrink:0; margin-left:10px; }
     .sidebar-item-label { opacity:1; transition:opacity .15s; }
     .sidebar.collapsed .sidebar-item-label { opacity:0; width:0; overflow:hidden; }
     .sidebar.collapsed .sidebar-item { justify-content:center; padding:.625rem 1rem; }
@@ -1304,11 +1304,9 @@ function App() {
       <div className={`drawer-overlay ${mobileMenuOpen?'open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
       <nav className={`mobile-drawer ${mobileMenuOpen?'open':''}`}>
         <div className="mobile-drawer-header">
-          <div className="logo">
-            <div className="logo-icon">₿</div>
-            <span className="logo-text">Bitcoin Tracker</span>
-          </div>
           <button className="btn-icon" onClick={()=>setMobileMenuOpen(false)}>{Icon.X()}</button>
+          <span className="logo-text">Bitcoin Tracker</span>
+          <div className="logo-icon">₿</div>
         </div>
         <div className="mobile-drawer-nav">
           {NAV_ITEMS.map(item=>(
