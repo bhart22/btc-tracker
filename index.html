@@ -672,9 +672,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       .map(tx => ({ ...tx, normalizedDate: normalizeDate(tx.date) }))
       .filter(tx => tx.normalizedDate)
       .sort((a,b) => a.normalizedDate.localeCompare(b.normalizedDate));
-    const activeWalletSet = new Set(wallets.filter(w => !w.archived).map(w => w.name));
     let totalCost = 0;
-    let activeHoldingsBTC = 0;
     const walletBalances = {};
     const points = [], holdingsPoints = [];
     let runningBTC = 0;
@@ -704,7 +702,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       } else if(tx.type==='Transfer') { runningBTCForCost-=fee; }
       else if(tx.type==='Consolidation') { runningBTCForCost-=fee; }
 
-      // Track active-wallet holdings history for dashboard value charts.
+      // Track included-transaction holdings history for dashboard value charts.
       ensureWallet(w1);
       ensureWallet(w2);
       if(tx.type==='Buy'||tx.type==='Reward') { if(w1) walletBalances[w1]+=amt; }
@@ -715,14 +713,13 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       } else if(tx.type==='Consolidation') {
         if(w1) walletBalances[w1]-=fee;
       }
-      activeHoldingsBTC = Object.entries(walletBalances)
-        .filter(([name]) => activeWalletSet.has(name))
-        .reduce((sum, [, bal]) => sum + bal, 0);
+      const includedHoldingsBTC = Object.values(walletBalances)
+        .reduce((sum, bal) => sum + bal, 0);
 
       const totalBTC = runningBTC;
       const avgCost = runningBTCForCost>0.00000001 ? totalCost/runningBTCForCost : null;
       const pt = { date:tx.normalizedDate, btc:+totalBTC.toFixed(8), avgCost:avgCost!==null ? +avgCost.toFixed(2) : null };
-      const holdingsPt = { date:tx.normalizedDate, holdingsBtc:+activeHoldingsBTC.toFixed(8) };
+      const holdingsPt = { date:tx.normalizedDate, holdingsBtc:+includedHoldingsBTC.toFixed(8) };
       const last = points[points.length-1];
       if(last && last.date===tx.normalizedDate) points[points.length-1]=pt;
       else points.push(pt);
