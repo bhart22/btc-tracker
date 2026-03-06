@@ -1,0 +1,2213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitcoin Transaction Tracker</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    // Google Drive Sync Module
+    const GDRIVE_CLIENT_ID = '1022736433382-1iui89030rcghre1ml7je3of5tj5s5li.apps.googleusercontent.com';
+    const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+    const GDRIVE_FILENAME = 'btc-tracker-data.json';
+    
+    const GDriveSync = {
+      tokenClient: null,
+      accessToken: null,
+      fileId: null,
+      _initPromise: null,
+      
+      init() {
+        if(this._initPromise) return this._initPromise;
+        this._initPromise = new Promise((resolve) => {
+          const check = () => {
+            if(window.google?.accounts?.oauth2) {
+              this.tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: GDRIVE_CLIENT_ID,
+                scope: GDRIVE_SCOPE,
+                callback: () => {}, // overridden per-call
+              });
+              resolve(true);
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+          // Timeout after 5s
+          setTimeout(() => resolve(false), 5000);
+        });
+        return this._initPromise;
+      },
+
+      requestToken() {
+        return new Promise((resolve, reject) => {
+          if(!this.tokenClient) { reject(new Error('Not initialized')); return; }
+          this.tokenClient.callback = (resp) => {
+            if(resp.error) { reject(resp); return; }
+            this.accessToken = resp.access_token;
+            resolve(resp.access_token);
+          };
+          this.tokenClient.error_callback = (err) => reject(err);
+          if(this.accessToken) {
+            this.tokenClient.requestAccessToken({ prompt: '' }); // silent re-auth
+          } else {
+            this.tokenClient.requestAccessToken({ prompt: 'consent' });
+          }
+        });
+      },
+      
+      async _fetch(url, opts={}) {
+        const r = await fetch(url, {
+          ...opts,
+          headers: { 'Authorization': 'Bearer ' + this.accessToken, ...(opts.headers||{}) },
+        });
+        if(r.status === 401) {
+          // Token expired, refresh
+          await this.requestToken();
+          return fetch(url, {
+            ...opts,
+            headers: { 'Authorization': 'Bearer ' + this.accessToken, ...(opts.headers||{}) },
+          });
+        }
+        return r;
+      },
+
+      async findFile() {
+        const r = await this._fetch(
+          `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D'${GDRIVE_FILENAME}'&fields=files(id,name,modifiedTime)`
+        );
+        const data = await r.json();
+        if(data.files && data.files.length > 0) {
+          this.fileId = data.files[0].id;
+          return data.files[0];
+        }
+        return null;
+      },
+      
+      async pull() {
+        if(!this.accessToken) await this.requestToken();
+        const file = await this.findFile();
+        if(!file) return null;
+        const r = await this._fetch(
+          `https://www.googleapis.com/drive/v3/files/${this.fileId}?alt=media`
+        );
+        return await r.json();
+      },
+      
+      async push(data) {
+        if(!this.accessToken) await this.requestToken();
+        const body = JSON.stringify(data);
+        
+        if(this.fileId) {
+          // Update existing
+          await this._fetch(
+            `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media`,
+            { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
+          );
+        } else {
+          // Create new
+          const metadata = { name: GDRIVE_FILENAME, parents: ['appDataFolder'] };
+          const form = new FormData();
+          form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+          form.append('file', new Blob([body], { type: 'application/json' }));
+          const r = await this._fetch(
+            'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+            { method: 'POST', body: form }
+          );
+          const res = await r.json();
+          this.fileId = res.id;
+        }
+        return true;
+      },
+      
+      async signOut() {
+        if(this.accessToken) {
+          google.accounts.oauth2.revoke(this.accessToken);
+          this.accessToken = null;
+          this.fileId = null;
+        }
+      },
+      
+      isSignedIn() { return !!this.accessToken; }
+    };
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg-primary: #fafafa; --bg-secondary: #ffffff; --bg-tertiary: #f5f5f5;
+      --text-primary: #0a0a0a; --text-secondary: #525252; --text-tertiary: #a3a3a3;
+      --border-color: #e5e5e5; --border-hover: #d4d4d4;
+      --bitcoin-orange: #f7931a; --bitcoin-light: #fef3e8;
+      --green: #16a34a; --green-light: #dcfce7; --red: #dc2626; --red-light: #fee2e2;
+      --blue: #2563eb; --blue-light: #dbeafe; --purple: #7c3aed; --purple-light: #ede9fe;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.04); --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+    }
+    [data-theme="dark"] {
+      --bg-primary: #0a0a0a; --bg-secondary: #141414; --bg-tertiary: #1e1e1e;
+      --text-primary: #f5f5f5; --text-secondary: #a3a3a3; --text-tertiary: #525252;
+      --border-color: #2a2a2a; --border-hover: #404040;
+      --bitcoin-light: #2a1800; --green-light: #0f2d1a; --red-light: #2d0f0f;
+      --blue-light: #0f1d3d; --purple-light: #1e1030;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.4); --shadow-md: 0 4px 12px rgba(0,0,0,0.5);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,0.6);
+    }
+    body { font-family:'IBM Plex Sans',sans-serif; background:var(--bg-primary); color:var(--text-primary); line-height:1.6; -webkit-font-smoothing:antialiased; transition:background .3s,color .3s; }
+    .app { min-height:100vh; display:flex; flex-direction:column; }
+    
+    /* Header */
+    .header { background:var(--bg-secondary); border-bottom:1px solid var(--border-color); padding:.875rem 1.5rem; position:sticky; top:0; z-index:200; box-shadow:var(--shadow-sm); }
+    .header-inner { max-width:1600px; margin:0 auto; display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+    .logo { display:flex; align-items:center; gap:.625rem; text-decoration:none; color:inherit; }
+    .logo-icon { width:30px; height:30px; background:var(--bitcoin-orange); border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; color:#fff; font-size:16px; flex-shrink:0; }
+    .logo-text { font-size:1.0625rem; font-weight:600; letter-spacing:-.02em; white-space:nowrap; }
+    .header-actions { display:flex; gap:.5rem; align-items:center; }
+    
+    /* Nav tabs */
+    .nav-tabs { display:flex; gap:0; border-bottom:2px solid var(--border-color); margin-bottom:1.5rem; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+    .nav-tabs::-webkit-scrollbar { display:none; }
+    .nav-tab { flex-shrink:0; }
+    .nav-tab { padding:.625rem 1.25rem; font-size:.875rem; font-weight:500; border:none; background:none; cursor:pointer; color:var(--text-secondary); border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; white-space:nowrap; font-family:inherit; }
+    .nav-tab:hover { color:var(--text-primary); }
+    .nav-tab.active { color:var(--bitcoin-orange); border-bottom-color:var(--bitcoin-orange); font-weight:600; }
+
+    /* Main */
+    .main { flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; }
+
+    /* Buttons */
+    .btn { padding:.5rem 1rem; border-radius:8px; font-size:.8125rem; font-weight:500; border:none; cursor:pointer; transition:all .15s; font-family:inherit; white-space:nowrap; display:inline-flex; align-items:center; gap:.375rem; }
+    .btn:active { transform:translateY(1px); }
+    .btn-primary { background:var(--bitcoin-orange); color:#fff; }
+    .btn-primary:hover { background:#e8890f; box-shadow:var(--shadow-md); }
+    .btn-secondary { background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); }
+    .btn-secondary:hover { border-color:var(--border-hover); background:var(--bg-secondary); }
+    .btn-danger { background:var(--red-light); color:var(--red); border:1px solid var(--red); }
+    .btn-danger:hover { background:var(--red); color:#fff; }
+    .btn-sm { padding:.375rem .75rem; font-size:.75rem; }
+    .btn-icon { width:32px; height:32px; padding:0; border-radius:7px; background:var(--bg-tertiary); border:1px solid var(--border-color); display:inline-flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s; font-size:.9375rem; color:var(--text-primary); }
+    .btn-icon:hover { border-color:var(--border-hover); background:var(--bg-secondary); color:var(--text-primary); }
+    .btn-icon-danger:hover { background:var(--red-light); border-color:var(--red); color:var(--red); }
+    [data-theme="dark"] .btn-icon { color:#e5e5e5; border-color:#404040; }
+    [data-theme="dark"] .btn-icon:hover { color:#fff; border-color:#525252; }
+
+    /* Cards / Sections */
+    .card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:12px; box-shadow:var(--shadow-sm); overflow:hidden; margin-bottom:1.25rem; }
+    .card-header { padding:1.125rem 1.5rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:1rem; }
+    .card-title { font-size:1rem; font-weight:600; letter-spacing:-.01em; }
+    .card-body { padding:1.25rem 1.5rem; }
+
+    /* Stats grid */
+    .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-bottom:1.25rem; }
+    .stat-card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:12px; padding:1.25rem; box-shadow:var(--shadow-sm); transition:all .2s; }
+    .stat-card:hover { box-shadow:var(--shadow-md); border-color:var(--border-hover); }
+    .stat-label { font-size:.75rem; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin-bottom:.375rem; }
+    .stat-value { font-size:1.625rem; font-weight:700; font-family:'JetBrains Mono',monospace; letter-spacing:-.02em; line-height:1.2; }
+    .stat-sub { font-size:.75rem; color:var(--text-tertiary); margin-top:.25rem; }
+    .stat-value.btc { color:var(--bitcoin-orange); }
+    .stat-value.green { color:var(--green); }
+    .stat-value.red { color:var(--red); }
+
+    /* Badges */
+    .badge { display:inline-flex; padding:.2rem .5rem; border-radius:5px; font-size:.6875rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
+    .badge-buy { background:var(--blue-light); color:var(--blue); }
+    .badge-sell { background:var(--red-light); color:var(--red); }
+    .badge-transfer { background:var(--purple-light); color:var(--purple); }
+    .badge-consolidation { background:var(--blue-light); color:var(--blue); }
+    .badge-reward { background:var(--green-light); color:var(--green); }
+
+    /* Table */
+    .table-wrap { overflow-x:auto; }
+    table { width:100%; border-collapse:collapse; font-size:.8125rem; }
+    thead { background:var(--bg-tertiary); }
+    th { padding:.75rem 1rem; text-align:left; font-weight:600; font-size:.6875rem; text-transform:uppercase; letter-spacing:.06em; color:var(--text-secondary); border-bottom:1px solid var(--border-color); white-space:nowrap; }
+    td { padding:.75rem 1rem; border-bottom:1px solid var(--border-color); vertical-align:middle; }
+    tbody tr { transition:background .1s; }
+    tbody tr:hover { background:var(--bg-tertiary); }
+    tbody tr:last-child td { border-bottom:none; }
+    .mono { font-family:'JetBrains Mono',monospace; }
+
+    /* Search/filter bar */
+    .filter-bar { display:flex; gap:.625rem; align-items:center; flex-wrap:wrap; padding:1rem 1.5rem; border-bottom:1px solid var(--border-color); background:var(--bg-tertiary); }
+    .search-input { padding:.5rem .875rem; border:1px solid var(--border-color); border-radius:8px; font-size:.8125rem; background:var(--bg-secondary); color:var(--text-primary); font-family:inherit; flex:1; min-width:160px; transition:border-color .15s; }
+    .search-input:focus { outline:none; border-color:var(--bitcoin-orange); box-shadow:0 0 0 3px rgba(247,147,26,.1); }
+    .filter-select { padding:.5rem .75rem; border:1px solid var(--border-color); border-radius:8px; font-size:.8125rem; background:var(--bg-secondary); color:var(--text-primary); font-family:inherit; cursor:pointer; }
+    .filter-select:focus { outline:none; border-color:var(--bitcoin-orange); }
+    .filter-count { font-size:.75rem; color:var(--text-tertiary); white-space:nowrap; margin-left:auto; }
+
+    /* Modal */
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,.55); backdrop-filter:blur(4px); display:flex; align-items:center; justify-content:center; z-index:1000; padding:1rem; animation:fadeIn .2s ease; }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+    .modal { background:var(--bg-secondary); border-radius:16px; box-shadow:var(--shadow-lg); max-width:620px; width:100%; max-height:92vh; overflow-y:auto; animation:slideUp .25s ease; }
+    @keyframes slideUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }
+    .modal-header { padding:1.25rem 1.5rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; }
+    .modal-title { font-size:1.0625rem; font-weight:600; }
+    .modal-body { padding:1.5rem; }
+    .modal-footer { padding:1rem 1.5rem; border-top:1px solid var(--border-color); display:flex; justify-content:flex-end; gap:.625rem; }
+
+    /* Form */
+    .form-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1rem; margin-bottom:1rem; }
+    .form-group { display:flex; flex-direction:column; gap:.375rem; }
+    .form-group.full { grid-column:1/-1; }
+    .form-label { font-size:.8125rem; font-weight:500; color:var(--text-secondary); }
+    .form-input, .form-select { padding:.5rem .75rem; border:1px solid var(--border-color); border-radius:8px; font-size:.875rem; font-family:'IBM Plex Sans',sans-serif; background:var(--bg-secondary); color:var(--text-primary); transition:border-color .15s; }
+    .form-input[type=number] { font-family:'JetBrains Mono',monospace; }
+    .form-input::placeholder { color:var(--text-tertiary); }
+    .form-input:focus, .form-select:focus { outline:none; border-color:var(--bitcoin-orange); box-shadow:0 0 0 3px rgba(247,147,26,.1); }
+    .price-wrap { position:relative; }
+    .price-wrap .form-input { padding-right:2.5rem; }
+    .price-refresh { position:absolute; right:.5rem; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--bitcoin-orange); font-size:1rem; padding:0; display:flex; }
+    .price-refresh:hover { opacity:.7; }
+
+    /* Wallet manager */
+    .wallet-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem; }
+    .wallet-card { background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:10px; padding:1.25rem; transition:all .2s; }
+    .wallet-card:hover { border-color:var(--bitcoin-orange); }
+    .wallet-card-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:.75rem; }
+    .wallet-name { font-size:.9375rem; font-weight:600; }
+    .wallet-type-badge { font-size:.625rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; padding:.15rem .5rem; border-radius:4px; background:var(--bitcoin-light); color:var(--bitcoin-orange); }
+    .wallet-btc { font-size:1.375rem; font-weight:700; font-family:'JetBrains Mono',monospace; color:var(--bitcoin-orange); }
+    .wallet-usd { font-size:.8125rem; color:var(--text-secondary); margin-top:.125rem; font-family:'JetBrains Mono',monospace; }
+    .wallet-delta { font-size:.75rem; margin-top:.375rem; }
+    .wallet-address { font-size:.6875rem; color:var(--text-tertiary); font-family:'JetBrains Mono',monospace; margin-top:.5rem; word-break:break-all; }
+
+    /* Audit / reconcile */
+    .audit-row { display:flex; justify-content:space-between; align-items:center; padding:.625rem 0; border-bottom:1px solid var(--border-color); font-size:.875rem; }
+    .audit-row:last-child { border-bottom:none; }
+    .audit-label { color:var(--text-secondary); }
+    .audit-value { font-family:'JetBrains Mono',monospace; font-weight:600; }
+    .audit-ok { color:var(--green); }
+    .audit-warn { color:#d97706; }
+    .audit-err { color:var(--red); }
+
+    /* Toggle */
+    .theme-toggle { width:34px; height:34px; border-radius:8px; background:var(--bg-tertiary); border:1px solid var(--border-color); display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:1rem; transition:all .2s; }
+    .theme-toggle:hover { border-color:var(--border-hover); }
+
+    /* Empty state */
+    .empty { text-align:center; padding:3rem 1rem; color:var(--text-tertiary); }
+    .empty-icon { font-size:3rem; opacity:.3; margin-bottom:.75rem; }
+    .empty-text { font-size:1rem; color:var(--text-secondary); margin-bottom:.25rem; }
+    .empty-sub { font-size:.8125rem; }
+
+    /* Price pill */
+    .price-pill { display:inline-flex; align-items:center; gap:.375rem; font-size:.75rem; padding:.25rem .625rem; border-radius:100px; background:var(--bitcoin-light); color:var(--bitcoin-orange); font-weight:600; font-family:'JetBrains Mono',monospace; }
+    .price-dot { width:6px; height:6px; border-radius:50%; background:var(--bitcoin-orange); animation:pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+
+    /* Sync status */
+    .sync-pill { display:inline-flex; align-items:center; gap:.375rem; font-size:.6875rem; padding:.25rem .625rem; border-radius:100px; font-weight:600; white-space:nowrap; cursor:pointer; border:1px solid var(--border-color); background:var(--bg-tertiary); color:var(--text-secondary); transition:all .15s; }
+    .sync-pill:hover { border-color:var(--border-hover); }
+    .sync-pill.synced { background:var(--green-light); color:var(--green); border-color:rgba(22,163,74,.3); }
+    .sync-pill.syncing { color:var(--bitcoin-orange); border-color:rgba(247,147,26,.3); }
+    .sync-pill.error { background:var(--red-light); color:var(--red); border-color:rgba(220,38,38,.3); }
+    .sync-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+    .sync-dot.connected { background:var(--green); }
+    .sync-dot.disconnected { background:var(--text-tertiary); }
+    .sync-dot.syncing { background:var(--bitcoin-orange); animation:pulse 1s infinite; }
+    .sync-dot.error { background:var(--red); }
+
+    /* Responsive */
+    @media(max-width:768px) {
+      .main { padding:1rem; }
+      .header { padding:.75rem 1rem; }
+      .logo-text { display:none; }
+      .stats-grid { grid-template-columns:1fr 1fr; }
+      .filter-bar { gap:.5rem; }
+      .desktop-only { display:none !important; }
+    }
+    @media(max-width:480px) {
+      .stats-grid { grid-template-columns:1fr; }
+      .charts-grid { grid-template-columns:1fr !important; }
+    }
+
+    /* Info banner */
+    .info-banner { background:var(--bitcoin-light); border:1px solid rgba(247,147,26,.3); border-radius:10px; padding:.875rem 1.25rem; margin-bottom:1.25rem; display:flex; align-items:center; gap:.75rem; font-size:.8125rem; }
+    .info-banner strong { color:var(--bitcoin-orange); }
+
+    /* Toast */
+    .toast { position:fixed; bottom:1.5rem; right:1.5rem; background:var(--text-primary); color:var(--bg-primary); padding:.75rem 1.25rem; border-radius:10px; font-size:.875rem; font-weight:500; box-shadow:var(--shadow-lg); z-index:2000; animation:toastIn .3s ease; max-width:320px; }
+    @keyframes toastIn { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:translateY(0)} }
+
+    /* Pagination */
+    .pagination { display:flex; align-items:center; gap:.5rem; padding:.875rem 1.5rem; border-top:1px solid var(--border-color); justify-content:space-between; }
+    .page-info { font-size:.8125rem; color:var(--text-secondary); }
+    .page-btns { display:flex; gap:.375rem; }
+    .page-btn { padding:.375rem .625rem; border:1px solid var(--border-color); border-radius:6px; background:var(--bg-secondary); color:var(--text-primary); font-size:.8125rem; cursor:pointer; font-family:inherit; transition:all .15s; }
+    .page-btn:hover:not(:disabled) { border-color:var(--bitcoin-orange); color:var(--bitcoin-orange); }
+    .page-btn.active { background:var(--bitcoin-orange); color:#fff; border-color:var(--bitcoin-orange); }
+    .page-btn:disabled { opacity:.4; cursor:not-allowed; }
+
+
+    /* Transfer Wizard */
+    .wizard-overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); backdrop-filter:blur(6px); display:flex; align-items:center; justify-content:center; z-index:1100; padding:1rem; animation:fadeIn .2s ease; }
+    .wizard { background:var(--bg-secondary); border-radius:20px; box-shadow:var(--shadow-lg); width:100%; max-width:680px; max-height:92vh; display:flex; flex-direction:column; animation:slideUp .25s ease; }
+    .wizard-header { padding:1.5rem 1.75rem 1.25rem; border-bottom:1px solid var(--border-color); }
+    .wizard-progress { display:flex; align-items:center; gap:.375rem; margin-bottom:1rem; }
+    .wizard-step-dot { width:8px; height:8px; border-radius:50%; background:var(--border-color); transition:all .2s; }
+    .wizard-step-dot.done { background:var(--green); }
+    .wizard-step-dot.active { background:var(--bitcoin-orange); width:24px; border-radius:4px; }
+    .wizard-title { font-size:1.125rem; font-weight:700; margin-bottom:.25rem; }
+    .wizard-subtitle { font-size:.8125rem; color:var(--text-secondary); }
+    .wizard-body { flex:1; overflow-y:auto; padding:1.5rem 1.75rem; }
+    .wizard-footer { padding:1.125rem 1.75rem; border-top:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:.75rem; }
+    .wizard-tx-card { background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:12px; padding:1.25rem; margin-bottom:1rem; transition:border-color .15s; }
+    .wizard-tx-card.needs-fix { border-color:#d97706; background:rgba(217,119,6,.04); }
+    .wizard-tx-card.fixed { border-color:var(--green); background:rgba(22,163,74,.04); }
+    .wizard-tx-card.skipped { opacity:.5; }
+    .wizard-tx-meta { display:flex; align-items:center; gap:.625rem; margin-bottom:.875rem; flex-wrap:wrap; }
+    .wizard-tx-amount { font-family:'JetBrains Mono',monospace; font-weight:700; font-size:1rem; color:var(--bitcoin-orange); }
+    .wizard-tx-date { font-size:.8125rem; color:var(--text-secondary); }
+    .wizard-tx-notes { font-size:.8125rem; color:var(--text-tertiary); font-style:italic; margin-top:.375rem; }
+    .wizard-wallet-row { display:grid; grid-template-columns:1fr auto 1fr; gap:.75rem; align-items:end; }
+    .wizard-arrow { color:var(--text-tertiary); font-size:1.25rem; padding-bottom:.4rem; text-align:center; }
+    .wizard-field-label { font-size:.75rem; font-weight:600; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.375rem; }
+    .wizard-missing { display:flex; align-items:center; gap:.375rem; font-size:.75rem; color:#d97706; font-weight:600; margin-top:.375rem; }
+    .wizard-summary-row { display:flex; justify-content:space-between; align-items:center; padding:.5rem 0; border-bottom:1px solid var(--border-color); font-size:.875rem; }
+    .wizard-summary-row:last-child { border-bottom:none; }
+    .wizard-count-badge { display:inline-flex; align-items:center; justify-content:center; background:var(--bitcoin-orange); color:#fff; border-radius:100px; font-size:.6875rem; font-weight:700; padding:.15rem .5rem; margin-left:.375rem; }
+
+    /* Separator */
+    .sep { height:1px; background:var(--border-color); margin:1rem 0; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+// ─── Pre-loaded 2025 Transaction Data ────────────────────────────────────────
+const PRELOADED_TRANSACTIONS = [];
+
+const DEFAULT_WALLETS = [];
+
+const PAGE_SIZE = 50;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const fmtBTC = v => parseFloat(v||0).toFixed(8);
+const fmtBTCShort = v => parseFloat(v||0).toFixed(8);
+const fmtUSD = v => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2}).format(v||0);
+const fmtDate = d => { if(!d) return '—'; const [y,m,dy] = d.split('-'); return `${m}/${dy}/${y}`; };
+
+// ─── SVG Icons ───────────────────────────────────────────────────────────────
+const sz = {width:14,height:14,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'};
+const Icon = {
+  X: (s)=><svg {...sz} {...s}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+  Edit: (s)=><svg {...sz} {...s}><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>,
+  Trash: (s)=><svg {...sz} {...s}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>,
+  Archive: (s)=><svg {...sz} {...s}><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>,
+  Unarchive: (s)=><svg {...sz} {...s}><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>,
+  Refresh: (s)=><svg {...sz} {...s}><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>,
+  Upload: (s)=><svg {...sz} {...s}><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/></svg>,
+  Warning: (s)=><svg {...sz} width={s?.width||18} height={s?.height||18} {...s}><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  Link: (s)=><svg {...sz} {...s}><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>,
+  Cloud: (s)=><svg {...sz} {...s}><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>,
+  CloudOff: (s)=><svg {...sz} {...s}><path d="M22.61 16.95A5 5 0 0 0 18 10h-1.26a8 8 0 0 0-7.05-6M5 5a8 8 0 0 0 4 15h9a5 5 0 0 0 1.7-.3"/><line x1="1" y1="1" x2="23" y2="23"/></svg>,
+  Check: (s)=><svg {...sz} {...s}><polyline points="20 6 9 17 4 12"/></svg>,
+  User: (s)=><svg {...sz} {...s}><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
+  LogOut: (s)=><svg {...sz} {...s}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
+};
+
+// ─── Dashboard Charts ─────────────────────────────────────────────────────────
+function DashboardCharts({ transactions, wallets, btcPrice }) {
+  const chartData = React.useMemo(() => {
+    // Use wallet-based accumulation (same as walletHoldings) to match the Holdings stat.
+    // This correctly handles transfers between wallets without double-counting.
+    const activeWalletSet = new Set(wallets.filter(w => !w.archived).map(w => w.name));
+    const sorted = [...transactions].sort((a,b) => a.date.localeCompare(b.date));
+    let totalCost = 0;
+    const points = [];
+    // Replay wallet holdings per-date and track cost basis separately
+    totalCost = 0;
+    let runningBTCForCost = 0; // tracks total BTC for cost-basis ratio calculations
+    const walletBals = {};
+    sorted.forEach(tx => {
+      const amt = parseFloat(tx.amount)||0;
+      const fee = parseFloat(tx.fee)||0;
+      const price = parseFloat(tx.price)||0;
+      const w1 = tx.wallet;
+      const w2 = tx.wallet2;
+
+      // Update per-wallet balances (same logic as walletHoldings — no excludeStats filter)
+      if(w1) {
+        if(!walletBals[w1]) walletBals[w1] = 0;
+        if(tx.type==='Buy'||tx.type==='Reward') { walletBals[w1]+=amt; }
+        else if(tx.type==='Sell') { walletBals[w1]-=amt; }
+        else if(tx.type==='Transfer') {
+          walletBals[w1]-=(amt+fee);
+          if(w2) { if(!walletBals[w2]) walletBals[w2]=0; walletBals[w2]+=amt; }
+        } else if(tx.type==='Consolidation') {
+          walletBals[w1]-=fee;
+        }
+      }
+
+      // Update cost basis (non-excluded only, ALL wallets count)
+      if(!tx.excludeStats) {
+        if(tx.type==='Buy') { runningBTCForCost+=amt; totalCost+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee; }
+        else if(tx.type==='Reward') { runningBTCForCost+=amt; }
+        else if(tx.type==='Sell') {
+          const ratio = amt/Math.max(runningBTCForCost,0.00000001);
+          totalCost-=totalCost*ratio; runningBTCForCost-=amt;
+        } else if(tx.type==='Transfer') { runningBTCForCost-=fee; }
+        else if(tx.type==='Consolidation') { runningBTCForCost-=fee; }
+      }
+
+      // Sum active wallet balances for the chart point
+      const totalBTC = Object.entries(walletBals)
+        .filter(([name]) => activeWalletSet.has(name))
+        .reduce((sum, [, bal]) => sum + bal, 0);
+      const avgCost = totalBTC>0.00000001 ? totalCost/totalBTC : 0;
+      const pt = { date:tx.date, btc:+totalBTC.toFixed(8), avgCost:+avgCost.toFixed(2) };
+      const last = points[points.length-1];
+      if(last && last.date===tx.date) points[points.length-1]=pt;
+      else points.push(pt);
+    });
+    // Trim leading zero points so chart starts when real activity begins
+    while(points.length > 1 && points[0].btc < 0.00000001 && points[0].avgCost < 0.01) {
+      points.shift();
+    }
+    return points;
+  }, [transactions, wallets]);
+
+  if(!chartData.length) return null;
+
+  return (
+    <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1rem'}}>
+      <SVGChart
+        data={chartData}
+        dataKey="btc"
+        title="Accumulated BTC"
+        subtitle={chartData[chartData.length-1]?.btc.toFixed(8)+' BTC total'}
+        color="#f7931a"
+        formatY={v=>v.toFixed(8)}
+        formatTooltip={(v)=>{
+          const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : '';
+          return v.toFixed(8)+' BTC'+usd;
+        }}
+        fillGradient={true}
+      />
+      <SVGChart
+        data={chartData}
+        dataKey="avgCost"
+        title="Average Cost Basis"
+        subtitle={'$'+Math.round(chartData[chartData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
+        color="#2563eb"
+        formatY={v=>'$'+Math.round(v/1000)+'k'}
+        formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
+        refLine={btcPrice}
+        refLineColor="#16a34a"
+        refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
+      />
+    </div>
+  );
+}
+
+function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel }) {
+  const [tooltip, setTooltip] = React.useState(null);
+  const svgRef = React.useRef(null);
+  const W=480, H=180, PL=58, PR=16, PT=8, PB=32;
+  const iW=W-PL-PR, iH=H-PT-PB;
+
+  const vals = data.map(d=>d[dataKey]);
+  const minV=Math.min(...vals), maxV=Math.max(...vals);
+  const vRange = maxV-minV || 1;
+
+  // include refLine in Y scale if present
+  const yMin = refLine ? Math.min(minV, refLine*0.97) : minV;
+  const yMax = refLine ? Math.max(maxV, refLine*1.03) : maxV;
+  const yRange = yMax-yMin || 1;
+
+  const xScale = i => PL + (i/(data.length-1||1))*iW;
+  const yScale = v => PT + iH - ((v-yMin)/yRange)*iH;
+
+  const pathD = data.map((d,i)=>`${i===0?'M':'L'}${xScale(i).toFixed(1)},${yScale(d[dataKey]).toFixed(1)}`).join(' ');
+  const areaD = pathD+` L${xScale(data.length-1).toFixed(1)},${(PT+iH).toFixed(1)} L${xScale(0).toFixed(1)},${(PT+iH).toFixed(1)} Z`;
+
+  // Y axis ticks
+  const yTicks = [0,.25,.5,.75,1].map(t=>yMin+t*yRange);
+  // X axis ticks — first, middle, last
+  const xTickIdxs = [0, Math.floor((data.length-1)/2), data.length-1];
+
+  const gradId = 'grad_'+dataKey.replace(/[^a-z]/g,'');
+
+  function handleMouseMove(e) {
+    if(!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const idx = Math.round(((mx-PL)/iW)*(data.length-1));
+    const clamped = Math.max(0, Math.min(data.length-1, idx));
+    const d = data[clamped];
+    setTooltip({ x: xScale(clamped), y: yScale(d[dataKey]), val: d[dataKey], date: d.date });
+  }
+
+  const fmtTickDate = d => {
+    const dt = new Date(d+'T12:00:00');
+    return dt.toLocaleDateString('en-US',{month:'short',year:'2-digit'});
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div className="card-title">{title}</div>
+        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+      </div>
+      <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem',position:'relative'}}>
+        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:'block',overflow:'visible'}}
+          onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity="0.18"/>
+              <stop offset="100%" stopColor={color} stopOpacity="0"/>
+            </linearGradient>
+            <clipPath id={'clip_'+gradId}><rect x={PL} y={PT} width={iW} height={iH}/></clipPath>
+          </defs>
+
+          {/* Grid lines */}
+          {yTicks.map((v,i)=>(
+            <line key={i} x1={PL} x2={PL+iW} y1={yScale(v)} y2={yScale(v)}
+              stroke="var(--border-color)" strokeWidth="1" strokeDasharray="3 3"/>
+          ))}
+
+          {/* Reference line */}
+          {refLine && (
+            <>
+              <line x1={PL} x2={PL+iW} y1={yScale(refLine)} y2={yScale(refLine)}
+                stroke={refLineColor} strokeWidth="1.5" strokeDasharray="5 4"/>
+              <text x={PL+iW+4} y={yScale(refLine)+4} fontSize="9" fill={refLineColor}>{refLineLabel}</text>
+            </>
+          )}
+
+          {/* Area fill */}
+          {fillGradient && <path d={areaD} fill={`url(#${gradId})`} clipPath={`url(#clip_${gradId})`}/>}
+
+          {/* Line */}
+          <path d={pathD} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>
+
+          {/* Y axis labels */}
+          {yTicks.map((v,i)=>(
+            <text key={i} x={PL-6} y={yScale(v)+4} textAnchor="end" fontSize="10" fill="var(--text-tertiary)">
+              {formatY(v)}
+            </text>
+          ))}
+
+          {/* X axis labels */}
+          {xTickIdxs.map(i=>(
+            <text key={i} x={xScale(i)} y={H-4} textAnchor="middle" fontSize="10" fill="var(--text-tertiary)">
+              {fmtTickDate(data[i].date)}
+            </text>
+          ))}
+
+          {/* Tooltip dot + crosshair */}
+          {tooltip && (
+            <>
+              <line x1={tooltip.x} x2={tooltip.x} y1={PT} y2={PT+iH}
+                stroke="var(--border-color)" strokeWidth="1"/>
+              <circle cx={tooltip.x} cy={tooltip.y} r="4" fill={color} stroke="var(--bg-secondary)" strokeWidth="2"/>
+            </>
+          )}
+        </svg>
+
+        {/* Tooltip box */}
+        {tooltip && (
+          <div style={{
+            position:'absolute', top:PT+8, left: tooltip.x > W*0.6 ? 'auto' : PL+8,
+            right: tooltip.x > W*0.6 ? PR+8 : 'auto',
+            background:'var(--bg-secondary)', border:'1px solid var(--border-color)',
+            borderRadius:8, padding:'8px 12px', fontSize:'.8125rem', pointerEvents:'none',
+            boxShadow:'var(--shadow-md)', zIndex:10,
+          }}>
+            <div style={{color:'var(--text-secondary)',marginBottom:3,fontSize:'.75rem'}}>{tooltip.date}</div>
+            <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600}}>{formatTooltip(tooltip.val)}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function App() {
+  const [transactions, setTransactions] = useState(() => {
+    try { if(localStorage.getItem('btc-reset')) return PRELOADED_TRANSACTIONS; const s=localStorage.getItem('btc-tx-v2'); return s ? JSON.parse(s) : PRELOADED_TRANSACTIONS; }
+    catch { return PRELOADED_TRANSACTIONS; }
+  });
+  const [wallets, setWallets] = useState(() => {
+    try { if(localStorage.getItem('btc-reset')) return DEFAULT_WALLETS; const s=localStorage.getItem('btc-wallets'); return s ? JSON.parse(s) : DEFAULT_WALLETS; }
+    catch { return DEFAULT_WALLETS; }
+  });
+  const [theme, setTheme] = useState(() => localStorage.getItem('btc-theme')||'light');
+  const [settings, setSettings] = useState(() => {
+    try { const s=localStorage.getItem('btc-settings'); return s ? JSON.parse(s) : { defaultTxType:'Buy' }; }
+    catch { return { defaultTxType:'Buy' }; }
+  });
+  const updateSettings = (patch) => {
+    setSettings(prev => {
+      const next = {...prev, ...patch};
+      localStorage.setItem('btc-settings', JSON.stringify(next));
+      return next;
+    });
+  };
+  const [tab, setTab] = useState('dashboard');
+  const [showModal, setShowModal] = useState(false);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
+  const [wizardStep, setWizardStep] = useState(0); // 0=intro, 1..n=each tx, last=summary
+  const [wizardEdits, setWizardEdits] = useState({}); // idx -> {wallet, wallet2, skip}
+  const [form, setForm] = useState(() => {
+    const defType = (() => { try { const s=localStorage.getItem('btc-settings'); return s ? JSON.parse(s).defaultTxType||'Buy' : 'Buy'; } catch { return 'Buy'; } })();
+    return { date: new Date().toISOString().split('T')[0], type:defType, wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
+  });
+  const [editIdx, setEditIdx] = useState(null);
+  const [editWalletIdx, setEditWalletIdx] = useState(null);
+  const [showResetDialog, setShowResetDialog] = useState(false);
+  const [syncState, setSyncState] = useState('disconnected'); // disconnected, syncing, synced, error
+  const [syncUser, setSyncUser] = useState(null); // { email, name }
+  const [lastSync, setLastSync] = useState(null);
+  const syncDebounce = useRef(null);
+  const syncInitialized = useRef(false);
+  const [btcPrice, setBtcPrice] = useState(null);
+  const [priceLoading, setPriceLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const [filterType, setFilterType] = useState('All');
+  const [filterWallet, setFilterWallet] = useState('All');
+  const [filterYear, setFilterYear] = useState('All');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+
+  const [walletForm, setWalletForm] = useState({name:'',type:'Exchange',address:''});
+  const [showArchived, setShowArchived] = useState(false);
+
+  // Active wallets (not archived) vs all wallets (for stats)
+  const activeWallets = useMemo(() => wallets.filter(w => !w.archived), [wallets]);
+
+  function emptyForm() {
+    return { date: new Date().toISOString().split('T')[0], type:settings.defaultTxType||'Buy', wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
+  }
+
+  // Persist — explicit saves only, no auto-write useEffects
+  const save = React.useCallback((txs, wals) => {
+    const mod = new Date().toISOString();
+    localStorage.setItem('btc-tx-v2', JSON.stringify(txs));
+    localStorage.setItem('btc-wallets', JSON.stringify(wals));
+    localStorage.setItem('btc-last-modified', mod);
+    // Auto-sync to Drive if connected
+    if(GDriveSync.isSignedIn()) {
+      if(syncDebounce.current) clearTimeout(syncDebounce.current);
+      setSyncState('syncing');
+      syncDebounce.current = setTimeout(async () => {
+        try {
+          const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
+          await GDriveSync.push({ transactions: txs, wallets: wals, settings: settingsData, lastModified: mod });
+          setSyncState('synced');
+          setLastSync(new Date());
+        } catch(e) {
+          console.error('Sync push failed:', e);
+          setSyncState('error');
+        }
+      }, 1500);
+    }
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('btc-theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Apply theme on mount
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, []);
+
+  // Fetch BTC price
+  const fetchPrice = useCallback(async () => {
+    setPriceLoading(true);
+    try {
+      const r = await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+      const j = await r.json();
+      const p = parseFloat(j.data.amount);
+      setBtcPrice(p);
+      return p;
+    } catch { showToast('Could not fetch live price'); return null; }
+    finally { setPriceLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchPrice(); }, []);
+
+  // ─── Google Drive Sync ────────────────────────────────────────────────────
+  const handleSignIn = useCallback(async () => {
+    setSyncState('syncing');
+    try {
+      const ready = await GDriveSync.init();
+      if(!ready) { setSyncState('error'); showToast('Google Sign-In failed to load'); return; }
+      await GDriveSync.requestToken();
+      // Get user info
+      try {
+        const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { 'Authorization': 'Bearer ' + GDriveSync.accessToken }
+        });
+        const info = await r.json();
+        setSyncUser({ email: info.email, name: info.name });
+        localStorage.setItem('btc-sync-user', JSON.stringify({ email: info.email, name: info.name }));
+      } catch(e) { /* user info is optional */ }
+      localStorage.setItem('btc-sync-enabled', 'true');
+      // Pull from Drive
+      const remote = await GDriveSync.pull();
+      if(remote && remote.transactions) {
+        const localMod = localStorage.getItem('btc-last-modified') || '0';
+        const remoteMod = remote.lastModified || '0';
+        // If remote is newer, use it
+        if(remoteMod > localMod || !localStorage.getItem('btc-tx-v2')) {
+          setTransactions(remote.transactions);
+          setWallets(remote.wallets || []);
+          if(remote.settings) {
+            setSettings(remote.settings);
+            localStorage.setItem('btc-settings', JSON.stringify(remote.settings));
+          }
+          localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
+          localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
+          localStorage.setItem('btc-last-modified', remoteMod);
+          showToast('Synced from Google Drive');
+        } else {
+          // Local is newer, push to Drive
+          const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
+          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: new Date().toISOString() });
+          showToast('Pushed local data to Google Drive');
+        }
+      } else {
+        // No remote data, push local
+        const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
+        const mod = new Date().toISOString();
+        await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+        localStorage.setItem('btc-last-modified', mod);
+        showToast('Data backed up to Google Drive');
+      }
+      setSyncState('synced');
+      setLastSync(new Date());
+    } catch(e) {
+      console.error('Sign-in error:', e);
+      setSyncState('error');
+      localStorage.removeItem('btc-sync-enabled');
+      showToast('Sign-in failed');
+    }
+  }, [transactions, wallets]);
+
+  const handleSignOut = useCallback(() => {
+    GDriveSync.signOut();
+    setSyncState('disconnected');
+    setSyncUser(null);
+    setLastSync(null);
+    localStorage.removeItem('btc-sync-enabled');
+    localStorage.removeItem('btc-sync-user');
+    showToast('Disconnected from Google Drive');
+  }, []);
+
+  // Auto-reconnect on mount if previously signed in
+  useEffect(() => {
+    if(syncInitialized.current) return;
+    syncInitialized.current = true;
+    const wasEnabled = localStorage.getItem('btc-sync-enabled');
+    const savedUser = localStorage.getItem('btc-sync-user');
+    if(savedUser) { try { setSyncUser(JSON.parse(savedUser)); } catch {} }
+    if(wasEnabled) {
+      // Try silent re-auth
+      (async () => {
+        setSyncState('syncing');
+        try {
+          const ready = await GDriveSync.init();
+          if(!ready) { setSyncState('disconnected'); return; }
+          await GDriveSync.requestToken();
+          const remote = await GDriveSync.pull();
+          if(remote && remote.lastModified) {
+            const localMod = localStorage.getItem('btc-last-modified') || '0';
+            if(remote.lastModified > localMod) {
+              setTransactions(remote.transactions);
+              setWallets(remote.wallets || []);
+              if(remote.settings) {
+                setSettings(remote.settings);
+                localStorage.setItem('btc-settings', JSON.stringify(remote.settings));
+              }
+              localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
+              localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
+              localStorage.setItem('btc-last-modified', remote.lastModified);
+            }
+          }
+          setSyncState('synced');
+          setLastSync(new Date());
+        } catch(e) {
+          console.error('Auto-reconnect failed:', e);
+          setSyncState('disconnected');
+        }
+      })();
+    }
+  }, []);
+
+  function showToast(msg, dur=3000) {
+    if(toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, dur);
+  }
+
+  // ─── Wallet holdings ─────────────────────────────────────────────────────
+  const walletHoldings = useMemo(() => {
+    const h = {};
+    transactions.forEach(tx => {
+      const amt = parseFloat(tx.amount)||0;
+      const fee = parseFloat(tx.fee)||0;
+      const w1 = tx.wallet;
+      const w2 = tx.wallet2;
+      if(!w1) return;
+      if(!h[w1]) h[w1]=0;
+      if(tx.type==='Buy'||tx.type==='Reward') { h[w1]+=amt; }
+      else if(tx.type==='Sell') { h[w1]-=amt; }
+      else if(tx.type==='Transfer') {
+        h[w1]-=(amt+fee);
+        if(w2) { if(!h[w2]) h[w2]=0; h[w2]+=amt; }
+      } else if(tx.type==='Consolidation') {
+        h[w1]-=fee; // only fee is lost; BTC stays in same wallet
+      }
+    });
+    return h;
+  }, [transactions]);
+
+  // Total holdings = only ACTIVE wallets (archived wallets hidden from dashboard)
+  const trackedHoldings = useMemo(() => {
+    const walletSet = new Set(activeWallets.map(w => w.name));
+    return Object.entries(walletHoldings)
+      .filter(([name]) => walletSet.has(name))
+      .reduce((sum, [, bal]) => sum + bal, 0);
+  }, [walletHoldings, activeWallets]);
+
+  // ─── Stats (ALL transactions, not filtered by registered wallets) ────────
+  const stats = useMemo(() => {
+    let totalBought=0, totalSold=0, totalFeesBTC=0, costBasis=0, proceeds=0, rewardsIncome=0;
+    transactions.forEach(tx => {
+      if(tx.excludeStats) return;
+      const amt = parseFloat(tx.amount)||0;
+      const price = parseFloat(tx.price)||0;
+      const fee = parseFloat(tx.fee)||0;
+      if(tx.type==='Buy') { totalBought+=amt; costBasis+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee; }
+      else if(tx.type==='Sell') { totalSold+=amt; proceeds+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))-fee; }
+      else if(tx.type==='Transfer') { totalFeesBTC+=fee; }
+      else if(tx.type==='Consolidation') { totalFeesBTC+=fee; }
+      else if(tx.type==='Reward') { totalBought+=amt; rewardsIncome+=amt; }
+    });
+    // Use trackedHoldings (wallet-based) for market value — it correctly handles transfers
+    const currentValue = trackedHoldings * (btcPrice||0);
+    const unrealized = currentValue - costBasis + proceeds;
+    return { totalBought, totalSold, totalFeesBTC, costBasis, proceeds, rewardsIncome, currentValue, unrealized };
+  }, [transactions, btcPrice, trackedHoldings]);
+
+  // ─── Filtered transactions ────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    return transactions.map((tx, origIdx) => ({...tx, _origIdx: origIdx})).filter(tx => {
+      if(filterType!=='All' && tx.type!==filterType) return false;
+      if(filterWallet!=='All' && tx.wallet!==filterWallet && tx.wallet2!==filterWallet) return false;
+      if(filterYear!=='All' && !tx.date.startsWith(filterYear)) return false;
+      if(search) {
+        const q = search.toLowerCase();
+        if(!( tx.wallet?.toLowerCase().includes(q) || tx.wallet2?.toLowerCase().includes(q) ||
+              tx.notes?.toLowerCase().includes(q) || tx.txhash?.toLowerCase().includes(q) ||
+              tx.type?.toLowerCase().includes(q) || tx.amount?.includes(q) )) return false;
+      }
+      return true;
+    }).sort((a,b)=>b.date.localeCompare(a.date));
+  }, [transactions, filterType, filterWallet, filterYear, search]);
+
+  const years = useMemo(() => [...new Set(transactions.map(t=>t.date.slice(0,4)))].sort().reverse(), [transactions]);
+  const walletNames = useMemo(() => [...new Set(transactions.flatMap(t=>[t.wallet,t.wallet2].filter(Boolean)))].sort(), [transactions]);
+
+  const paged = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filtered.length/PAGE_SIZE));
+
+  // ─── CRUD ─────────────────────────────────────────────────────────────────
+  const handleSubmit = () => {
+    // Validate required fields
+    if(!form.date || !form.amount) { showToast('Date and Amount are required'); return; }
+    if((form.type==='Buy'||form.type==='Sell') && !form.price && !form.totalUsd) { showToast('Price or Total USD is required for Buy/Sell'); return; }
+    // If totalUsd provided but no price, derive price
+    const finalForm = {...form};
+    if((finalForm.type==='Buy'||finalForm.type==='Sell') && finalForm.totalUsd && !finalForm.price && finalForm.amount) {
+      finalForm.price = (parseFloat(finalForm.totalUsd)/parseFloat(finalForm.amount)).toFixed(2);
+    }
+    if(editIdx!==null) {
+      const u=[...transactions]; u[editIdx]=finalForm; setTransactions(u); save(u, wallets);
+      showToast('Transaction updated');
+    } else {
+      const added=[...transactions, finalForm]; setTransactions(added); save(added, wallets);
+      showToast('Transaction added');
+    }
+    setShowModal(false); setEditIdx(null); setForm(emptyForm());
+  };
+
+  const handleEdit = idx => {
+    const tx = transactions[idx];
+    const totalUsd = tx.totalUsd || ((tx.amount && tx.price) ? (parseFloat(tx.amount)*parseFloat(tx.price)).toFixed(2) : '');
+    setForm({...tx, totalUsd});
+    setEditIdx(idx);
+    setShowModal(true);
+  };
+  const handleDelete = idx => { if(confirm('Delete this transaction?')) { const filtered=transactions.filter((_,i)=>i!==idx); setTransactions(filtered); save(filtered, wallets); showToast('Deleted'); } };
+
+  const handleWalletSubmit = (e) => {
+    e.preventDefault();
+    if(editWalletIdx!==null) {
+      const u=[...wallets]; u[editWalletIdx]={...u[editWalletIdx],...walletForm}; setWallets(u); save(transactions, u);
+    } else {
+      const nw=[...wallets,{id:'w'+Date.now(),...walletForm}]; setWallets(nw); save(transactions, nw);
+    }
+    setShowWalletModal(false); setEditWalletIdx(null); setWalletForm({name:'',type:'Exchange',address:''});
+  };
+
+  // ─── Export CoinLedger CSV ────────────────────────────────────────────────
+  // Wallets tracked via external API (e.g. Coinbase) — skip Withdrawal row for these,
+  // only emit the Deposit on the receiving side. Configurable in Settings.
+  const exportCSV = (yearFilter) => {
+    const headers = ['Date (UTC)','Platform (Optional)','Asset Sent','Amount Sent','Asset Received','Amount Received','Fee Currency (Optional)','Fee Amount (Optional)','Type','Description (Optional)','TxHash (Optional)'];
+    const src = yearFilter ? transactions.filter(t=>t.date.startsWith(yearFilter)) : transactions;
+    const fmtNum = v => v ? parseFloat(v).toFixed(8).replace(/\.?0+$/,'') : '';
+    const rows = [];
+
+    src.sort((a,b)=>a.date.localeCompare(b.date)).forEach(tx => {
+      const amt = tx.amount||''; const fee = tx.fee||'';
+      const dateStr = tx.date+' 00:00:00';
+
+      if(tx.type==='Buy') {
+        const usd = tx.totalUsd ? parseFloat(tx.totalUsd).toFixed(2) : (parseFloat(amt)*parseFloat(tx.price||0)).toFixed(2);
+        rows.push([dateStr, tx.wallet||'', 'USD', usd, 'BTC', fmtNum(amt),
+          fee ? 'USD' : '', fee ? parseFloat(fee).toFixed(2) : '',
+          'Trade', tx.notes||'', tx.txhash||'']);
+
+      } else if(tx.type==='Sell') {
+        const usd = tx.totalUsd ? parseFloat(tx.totalUsd).toFixed(2) : (parseFloat(amt)*parseFloat(tx.price||0)).toFixed(2);
+        rows.push([dateStr, tx.wallet||'', 'BTC', fmtNum(amt), 'USD', usd,
+          fee ? 'USD' : '', fee ? parseFloat(fee).toFixed(2) : '',
+          'Trade', tx.notes||'', tx.txhash||'']);
+
+      } else if(tx.type==='Transfer') {
+        // Withdrawal row
+        rows.push([dateStr, tx.wallet||'', 'BTC', fmtNum(amt), '', '',
+          fee ? 'BTC' : '', fee ? fmtNum(fee) : '',
+          'Withdrawal', tx.notes||`Transfer to ${tx.wallet2||'wallet'}`, tx.txhash||'']);
+        // Deposit row
+        if(tx.wallet2) {
+          rows.push([dateStr, tx.wallet2, '', '', 'BTC', fmtNum(amt),
+            '', '',
+            'Deposit', `Transfer from ${tx.wallet||'wallet'}`, tx.txhash||'']);
+        }
+      } else if(tx.type==='Consolidation') {
+        // UTXO consolidation: same wallet in/out, only fee is lost
+        // CoinLedger: single Withdrawal row with fee, 0 amount sent
+        if(fee) {
+          rows.push([dateStr, tx.wallet||'', 'BTC', fmtNum(fee), '', '',
+            '', '',
+            'Withdrawal', tx.notes||`UTXO consolidation fee`, tx.txhash||'']);
+        }
+
+      } else if(tx.type==='Reward') {
+        rows.push([dateStr, tx.wallet||'', '', '', 'BTC', fmtNum(amt),
+          '', '', 'Income', tx.notes||'', tx.txhash||'']);
+      }
+    });
+    const csv=[headers,...rows].map(r=>r.map(f=>'"'+String(f).replace(/"/g,'""')+'"').join(',')).join('\n');
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download=`coinledger-${yearFilter||'all'}-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    showToast(`Exported ${rows.length} transactions`);
+  };
+
+  // ─── Export Native CSV (tracker backup) ──────────────────────────────────
+  const exportNativeCSV = () => {
+    const headers = ['date','type','wallet','wallet2','amount','price','fee','totalUsd','notes','txhash','excludeStats'];
+    const rows = transactions.slice().sort((a,b)=>a.date.localeCompare(b.date))
+      .map(tx => headers.map(h => tx[h]||''));
+    const csv = [headers, ...rows].map(r => r.map(f => '"' + String(f).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = `btc-tracker-backup-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  // ─── Import CSV ───────────────────────────────────────────────────────────
+  const importCSV = (e) => {
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload = ev => {
+      const lines=ev.target.result.split('\n');
+      const hdr=lines[0].toLowerCase();
+      const isCL=hdr.includes('asset sent')||hdr.includes('asset received');
+      // Parse CSV line respecting quoted fields
+      const parseCSVLine = (line) => {
+        const result = []; let current = ''; let inQuotes = false;
+        for(let c = 0; c < line.length; c++) {
+          if(inQuotes) {
+            if(line[c] === '"' && line[c+1] === '"') { current += '"'; c++; }
+            else if(line[c] === '"') { inQuotes = false; }
+            else { current += line[c]; }
+          } else {
+            if(line[c] === '"') { inQuotes = true; }
+            else if(line[c] === ',') { result.push(current.trim()); current = ''; }
+            else { current += line[c]; }
+          }
+        }
+        result.push(current.trim());
+        return result;
+      };
+      const imported=[];
+      // Dedup helper: build set of existing transaction keys
+      const txKey = (tx) => `${tx.date}|${tx.type}|${tx.wallet}|${tx.amount}`;
+      const existingKeys = new Set(transactions.map(txKey));
+      let dupeCount = 0;
+      for(let i=1;i<lines.length;i++) {
+        const line=lines[i].trim(); if(!line) continue;
+        const cols=parseCSVLine(line);
+        if(isCL) {
+          if(cols.length<9) continue;
+          const [dateStr,platform,assetSent,amtSent,assetRecv,amtRecv,feeCur,feeAmt,clType,desc,,txhash]=cols;
+          let d=dateStr.split(' ')[0];
+          // Handle YYYY-MM-DD and MM/DD/YYYY
+          if(d.includes('/')) { const p=d.split('/'); d=`${p[2]}-${p[0].padStart(2,'0')}-${p[1].padStart(2,'0')}`; }
+          let type='Buy', amount='', price='', fee='', totalUsd='';
+          if(clType==='Trade'&&assetRecv==='BTC') { type='Buy'; amount=amtRecv; totalUsd=amtSent||''; price=amtSent&&amtRecv?(parseFloat(amtSent)/parseFloat(amtRecv)).toFixed(2):''; fee=feeAmt; }
+          else if(clType==='Trade'&&assetSent==='BTC') { type='Sell'; amount=amtSent; totalUsd=amtRecv||''; price=amtRecv&&amtSent?(parseFloat(amtRecv)/parseFloat(amtSent)).toFixed(2):''; fee=feeAmt; }
+          else if(['Withdrawal','Transfer','Deposit'].includes(clType)) { type='Transfer'; amount=amtSent||amtRecv; fee=feeAmt; }
+          else if(['Income','Mining','Staking','Airdrop','Reward'].includes(clType)) { type='Reward'; amount=amtRecv; }
+          else if(clType==='Deposit') { type='Transfer'; amount=amtRecv; }
+          const newTx = {date:d,type,wallet:platform||'',wallet2:'',amount,price,fee,totalUsd,notes:desc||'',txhash:txhash||''};
+          if(existingKeys.has(txKey(newTx))) { dupeCount++; continue; }
+          imported.push(newTx);
+        } else {
+          if(cols.length<6) continue;
+          const newTx = {date:cols[0],type:cols[1],wallet:cols[2],wallet2:cols[3]||'',amount:cols[4],price:cols[5],fee:cols[6]||'',totalUsd:cols[7]||'',notes:cols[8]||'',txhash:cols[9]||'',excludeStats:cols[10]==='true'};
+          // Backward compat: old format had notes at index 7 and txhash at 8 (no totalUsd)
+          // Detect by checking if cols[7] looks like a number (totalUsd) or text (notes)
+          if(cols.length<=9 && cols[7] && isNaN(parseFloat(cols[7]))) {
+            newTx.totalUsd = '';
+            newTx.notes = cols[7]||'';
+            newTx.txhash = cols[8]||'';
+            newTx.excludeStats = false;
+          }
+          if(existingKeys.has(txKey(newTx))) { dupeCount++; continue; }
+          imported.push(newTx);
+        }
+      }
+      if(imported.length) { const merged=[...transactions,...imported]; setTransactions(merged); save(merged, wallets); showToast(`Imported ${imported.length} transactions${dupeCount ? ` (${dupeCount} duplicates skipped)` : ''}`); }
+      else if(dupeCount) showToast(`All ${dupeCount} transactions already exist — nothing imported`);
+      else showToast('No valid transactions found');
+    };
+    reader.readAsText(file);
+    e.target.value='';
+  };
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div className="app">
+      {/* Header */}
+      <header className="header">
+        <div className="header-inner">
+          <div className="logo">
+            <div className="logo-icon">₿</div>
+            <span className="logo-text">Bitcoin Tracker</span>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
+            {/* Sync status */}
+            {syncState==='disconnected' ? (
+              <button className="sync-pill" onClick={handleSignIn} title="Sign in with Google to sync across devices">
+                {Icon.Cloud({width:12,height:12})}
+                <span className="desktop-only">Sign in</span>
+              </button>
+            ) : (
+              <button className={`sync-pill ${syncState}`} onClick={()=>setTab('settings')} title={syncUser ? `Synced as ${syncUser.email}` : 'Sync status'}>
+                <div className={`sync-dot ${syncState==='synced'?'connected':syncState==='syncing'?'syncing':'error'}`}/>
+                <span className="desktop-only">{syncState==='syncing'?'Syncing…':syncState==='error'?'Sync error':'Synced'}</span>
+              </button>
+            )}
+            {btcPrice && (
+              <div className="price-pill">
+                <div className="price-dot"/>
+                {fmtUSD(btcPrice)}
+              </div>
+            )}
+            <button className="btn btn-secondary btn-sm" onClick={fetchPrice} disabled={priceLoading} title="Refresh BTC price" style={{padding:'.375rem .5rem',minWidth:0}}>
+              {priceLoading ? Icon.Refresh({width:13,height:13,style:{animation:'spin 1s linear infinite'}}) : Icon.Refresh({width:13,height:13})}
+            </button>
+            <button className="btn btn-primary" onClick={()=>{setForm(emptyForm());setEditIdx(null);setShowModal(true);}}>
+              + Add Transaction
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="main">
+        <nav className="nav-tabs">
+          {['dashboard','transactions','wallets','export','settings'].map(t=>(
+            <button key={t} className={`nav-tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>
+              {t.charAt(0).toUpperCase()+t.slice(1)}
+            </button>
+          ))}
+        </nav>
+
+        {/* ── DASHBOARD ── */}
+        {tab==='dashboard' && (
+          <>
+            {/* Transfer wizard banner */}
+            {(()=>{
+              const incomplete = transactions.filter(t=>t.type==='Transfer'&&(!t.wallet||!t.wallet2)); // Consolidation excluded — same-wallet fee tx
+              if(!incomplete.length) return null;
+              return (
+                <div style={{background:'rgba(217,119,6,.08)',border:'1px solid #d97706',borderRadius:12,padding:'1rem 1.5rem',marginBottom:'1.25rem',display:'flex',alignItems:'center',justifyContent:'space-between',gap:'1rem',flexWrap:'wrap'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'.75rem'}}>
+                    <span style={{color:'#d97706',display:'flex'}}>{Icon.Warning({width:22,height:22})}</span>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:'.9375rem'}}>
+                        {incomplete.length} transfer{incomplete.length!==1?'s':''} missing wallet info
+                      </div>
+                      <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginTop:'.125rem'}}>
+                        These won't be counted correctly until From/To wallets are assigned.
+                      </div>
+                    </div>
+                  </div>
+                  <button className="btn btn-primary" onClick={()=>{setWizardEdits({});setWizardStep(0);setShowWizard(true);}}>
+                    Fix Transfers →
+                  </button>
+                </div>
+              );
+            })()}
+            <div className="stats-grid">
+              <div className="stat-card">
+                <div className="stat-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                  Holdings
+                  <span title="Holdings only include active (non-archived) wallets. Archived wallets still contribute to cost basis and P&L calculations. Delete a wallet entirely to remove it from all stats." style={{cursor:'help',fontSize:'.75rem',color:'var(--text-tertiary)',border:'1px solid var(--border-color)',borderRadius:'50%',width:16,height:16,display:'inline-flex',alignItems:'center',justifyContent:'center',lineHeight:1,flexShrink:0}}>?</span>
+                </div>
+                <div className="stat-value btc">{fmtBTCShort(trackedHoldings)}</div>
+                <div className="stat-sub">BTC{btcPrice?` · ${fmtUSD(trackedHoldings*(btcPrice||0))}`:''}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Cost Basis</div>
+                <div className="stat-value" style={{fontSize:'1.375rem'}}>{fmtUSD(stats.costBasis)}</div>
+                <div className="stat-sub">{fmtBTCShort(stats.totalBought)} BTC acquired</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Total P&L</div>
+                <div className={`stat-value ${btcPrice?(stats.unrealized>=0?'green':'red'):''}`} style={{fontSize:'1.375rem'}}>
+                  {btcPrice?fmtUSD(stats.unrealized):'—'}
+                </div>
+                <div className="stat-sub">{btcPrice&&stats.costBasis>0?`${(stats.unrealized/stats.costBasis*100).toFixed(1)}% return on cost`:'Waiting for price'}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Rewards Earned</div>
+                <div className="stat-value btc" style={{fontSize:'1.375rem'}}>{fmtBTCShort(stats.rewardsIncome)}</div>
+                <div className="stat-sub">{btcPrice?fmtUSD(stats.rewardsIncome*btcPrice):''} at current price</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Network Fees</div>
+                <div className="stat-value" style={{fontSize:'1.375rem',color:'var(--text-secondary)'}}>{fmtBTCShort(stats.totalFeesBTC)}</div>
+                <div className="stat-sub">BTC in transfer fees</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">Total Transactions</div>
+                <div className="stat-value" style={{fontSize:'1.875rem'}}>{transactions.length}</div>
+                <div className="stat-sub">{transactions.filter(t=>t.type==='Buy').length} buys · {transactions.filter(t=>t.type==='Reward').length} rewards</div>
+              </div>
+            </div>
+
+            {/* Wallet summary */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Holdings by Wallet</div>
+                <button className="btn btn-secondary btn-sm" onClick={()=>setTab('wallets')}>Manage Wallets →</button>
+              </div>
+              <div className="card-body">
+                <div className="wallet-grid">
+                  {activeWallets.map(w=>{
+                    const amount = walletHoldings[w.name]||0;
+                    if(amount <= 0.00000001) return null;
+                    const usdVal = btcPrice ? amount*btcPrice : null;
+                    return (
+                      <div key={w.name} className="wallet-card">
+                        <div className="wallet-card-header">
+                          <div className="wallet-name">{w.name}</div>
+                          <span className="wallet-type-badge">{w.type}</span>
+                        </div>
+                        <div className="wallet-btc">{fmtBTCShort(amount)} BTC</div>
+                        {usdVal && <div className="wallet-usd">{fmtUSD(usdVal)}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* ── Charts ── */}
+            <DashboardCharts transactions={transactions} wallets={wallets} btcPrice={btcPrice} />
+          </>
+        )}
+
+        {/* ── TRANSACTIONS ── */}
+        {tab==='transactions' && (
+          <div className="card">
+            <div className="filter-bar">
+              <input className="search-input" placeholder="Search wallet, notes, txhash…" value={search} onChange={e=>{setSearch(e.target.value);setPage(1);}}/>
+              <select className="filter-select" value={filterType} onChange={e=>{setFilterType(e.target.value);setPage(1);}}>
+                <option value="All">All Types</option>
+                {['Buy','Sell','Transfer','Reward','Consolidation'].map(t=><option key={t}>{t}</option>)}
+              </select>
+              <select className="filter-select" value={filterWallet} onChange={e=>{setFilterWallet(e.target.value);setPage(1);}}>
+                <option value="All">All Wallets</option>
+                {walletNames.map(w=><option key={w}>{w}</option>)}
+              </select>
+              <select className="filter-select" value={filterYear} onChange={e=>{setFilterYear(e.target.value);setPage(1);}}>
+                <option value="All">All Years</option>
+                {years.map(y=><option key={y}>{y}</option>)}
+              </select>
+              <span className="filter-count">{filtered.length} of {transactions.length}</span>
+            </div>
+
+            {filtered.length===0 ? (
+              <div className="empty"><div className="empty-icon">₿</div><div className="empty-text">No transactions found</div><div className="empty-sub">Try adjusting your filters</div></div>
+            ) : (
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Type</th>
+                        <th>From Wallet</th>
+                        <th>To Wallet</th>
+                        <th>Amount (BTC)</th>
+                        <th className="desktop-only">Price/BTC</th>
+                        <th className="desktop-only">Total USD</th>
+                        <th className="desktop-only">Fee</th>
+                        <th className="desktop-only">Notes</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paged.map((tx,i)=>{
+                        const realIdx = tx._origIdx;
+                        const total = tx.totalUsd ? parseFloat(tx.totalUsd) : (parseFloat(tx.amount)||0)*(parseFloat(tx.price)||0);
+                        return (
+                          <tr key={realIdx} style={tx.excludeStats?{opacity:.5}:{}}>
+                            <td style={{whiteSpace:'nowrap',fontSize:'.8125rem'}}>{fmtDate(tx.date)}</td>
+                            <td>
+                              <span className={`badge badge-${tx.type==='Consolidation'?'consolidation':tx.type.toLowerCase()}`}>{tx.type}</span>
+                              {tx.excludeStats && <span style={{fontSize:'.5625rem',fontWeight:600,textTransform:'uppercase',letterSpacing:'.06em',padding:'.1rem .3rem',borderRadius:3,background:'var(--bg-tertiary)',color:'var(--text-tertiary)',marginLeft:'.25rem',verticalAlign:'middle'}}>excluded</span>}
+                            </td>
+                            <td style={{fontWeight:500}}>{tx.wallet||'—'}</td>
+                            <td style={{color:'var(--text-secondary)'}}>{tx.wallet2||'—'}</td>
+                            <td className="mono" style={{fontWeight:600}}>{fmtBTC(tx.amount)}</td>
+                            <td className="mono desktop-only">{tx.price && parseFloat(tx.price)>0 ? fmtUSD(tx.price) : '—'}</td>
+                            <td className="mono desktop-only">{total>0 ? fmtUSD(total) : '—'}</td>
+                            <td className="mono desktop-only" style={{fontSize:'.75rem',color:'var(--text-secondary)'}}>
+                              {tx.fee && parseFloat(tx.fee)>0 ? (tx.type==='Transfer'?`${fmtBTC(tx.fee)} BTC`:fmtUSD(tx.fee)) : '—'}
+                            </td>
+                            <td className="desktop-only" style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:'.75rem',color:'var(--text-secondary)'}}>
+                              {tx.notes||'—'}
+                            </td>
+                            <td>
+                              <div style={{display:'flex',gap:'.25rem'}}>
+                                <button className="btn-icon" onClick={()=>handleEdit(realIdx)} title="Edit">{Icon.Edit()}</button>
+                                <button className="btn-icon btn-icon-danger" onClick={()=>handleDelete(realIdx)} title="Delete">{Icon.Trash()}</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {totalPages>1 && (
+                  <div className="pagination">
+                    <span className="page-info">Page {page} of {totalPages} · {filtered.length} results</span>
+                    <div className="page-btns">
+                      <button className="page-btn" disabled={page===1} onClick={()=>setPage(1)}>«</button>
+                      <button className="page-btn" disabled={page===1} onClick={()=>setPage(p=>p-1)}>‹</button>
+                      {Array.from({length:Math.min(5,totalPages)},(_,i)=>{
+                        const p=Math.max(1,Math.min(totalPages-4,page-2))+i;
+                        return <button key={p} className={`page-btn ${p===page?'active':''}`} onClick={()=>setPage(p)}>{p}</button>;
+                      })}
+                      <button className="page-btn" disabled={page===totalPages} onClick={()=>setPage(p=>p+1)}>›</button>
+                      <button className="page-btn" disabled={page===totalPages} onClick={()=>setPage(totalPages)}>»</button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── WALLETS ── */}
+        {tab==='wallets' && (
+          <>
+            <div className="card">
+              <div className="card-header">
+                <div style={{display:'flex',alignItems:'center',gap:'.75rem'}}>
+                  <div className="card-title">Wallet Manager</div>
+                  {wallets.some(w=>w.archived) && (
+                    <button className={`btn btn-sm ${showArchived?'btn-primary':'btn-secondary'}`} onClick={()=>setShowArchived(s=>!s)}>
+                      {showArchived ? 'Hide' : 'Show'} Archived ({wallets.filter(w=>w.archived).length})
+                    </button>
+                  )}
+                </div>
+                <button className="btn btn-primary btn-sm" onClick={()=>{setWalletForm({name:'',type:'Exchange',address:''});setEditWalletIdx(null);setShowWalletModal(true);}}>+ Add Wallet</button>
+              </div>
+              <div className="card-body">
+                <div className="wallet-grid">
+                  {wallets.filter(w => showArchived ? true : !w.archived).map((w,i)=>{
+                    const walletIdx = wallets.indexOf(w);
+                    const bal = walletHoldings[w.name]||0;
+                    const usd = btcPrice ? bal*btcPrice : null;
+                    return (
+                      <div key={w.id} className="wallet-card" style={w.archived?{opacity:.55,borderStyle:'dashed'}:{}}>
+                        <div className="wallet-card-header">
+                          <div style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                            <div className="wallet-name">{w.name}</div>
+                            {w.archived && <span style={{fontSize:'.5625rem',fontWeight:600,textTransform:'uppercase',letterSpacing:'.06em',padding:'.1rem .375rem',borderRadius:4,background:'var(--bg-tertiary)',color:'var(--text-tertiary)',border:'1px solid var(--border-color)'}}>Archived</span>}
+                          </div>
+                          <div style={{display:'flex',gap:'.25rem'}}>
+                            {!w.archived && (
+                              <button className="btn-icon" style={{width:26,height:26}} onClick={()=>{setWalletForm({name:w.name,type:w.type,address:w.address});setEditWalletIdx(walletIdx);setShowWalletModal(true);}} title="Edit">{Icon.Edit({width:12,height:12})}</button>
+                            )}
+                            {!w.archived ? (
+                              <button className="btn-icon" style={{width:26,height:26}} title="Archive wallet" onClick={()=>{const nw=[...wallets];nw[walletIdx]={...nw[walletIdx],archived:true};setWallets(nw);save(transactions,nw);showToast(`${w.name} archived`);}}>{Icon.Archive({width:12,height:12})}</button>
+                            ) : (
+                              <button className="btn-icon" style={{width:26,height:26,color:'var(--green)'}} title="Unarchive wallet" onClick={()=>{const nw=[...wallets];nw[walletIdx]={...nw[walletIdx],archived:false};setWallets(nw);save(transactions,nw);showToast(`${w.name} restored`);}}>{Icon.Unarchive({width:12,height:12})}</button>
+                            )}
+                            <button className="btn-icon btn-icon-danger" style={{width:26,height:26,color:'var(--red)'}} title="Delete permanently" onClick={()=>{if(confirm(`Permanently delete ${w.name}? Its transactions will no longer count toward stats. Consider archiving instead.`)){const nw=wallets.filter((_,j)=>j!==walletIdx);setWallets(nw);save(transactions,nw);}}}>{Icon.X({width:12,height:12})}</button>
+                          </div>
+                        </div>
+                        <span className="wallet-type-badge">{w.type}</span>
+                        <div className="wallet-btc" style={{marginTop:'.625rem'}}>{fmtBTCShort(bal)} BTC</div>
+                        {usd!==null && <div className="wallet-usd">{fmtUSD(usd)}</div>}
+                        {w.address && <div className="wallet-address">{w.address}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Reconciliation audit */}
+            <div className="card">
+              <div className="card-header"><div className="card-title">Reconciliation Audit</div></div>
+              <div className="card-body">
+                <p style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>
+                  Compare tracked holdings against your registered wallets. Holdings calculated from transactions only — does not pull live blockchain data.
+                </p>
+                {wallets.map(w=>{
+                  const tracked = walletHoldings[w.name]||0;
+                  const diff = 0; // would compare to onchain if we had live data
+                  const status = tracked < -0.00000001 ? 'err' : tracked > 0 ? 'ok' : 'warn';
+                  return (
+                    <div key={w.id} className="audit-row">
+                      <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
+                        <span className="audit-label">{w.name}</span>
+                        <span className="wallet-type-badge" style={{fontSize:'.5625rem'}}>{w.type}</span>
+                        {w.archived && <span style={{fontSize:'.5625rem',color:'var(--text-tertiary)'}}>archived</span>}
+                      </div>
+                      <div style={{display:'flex',alignItems:'center',gap:1}}>
+                        <span className={`audit-value audit-${status}`}>{fmtBTC(tracked)} BTC</span>
+                        {status==='err' && <span style={{marginLeft:'.5rem',fontSize:'.75rem',color:'var(--red)'}}>⚠ Negative balance</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div className="sep"/>
+                <div className="audit-row">
+                  <strong>Total Tracked</strong>
+                  <strong className="audit-value audit-ok">{fmtBTC(trackedHoldings)} BTC</strong>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── EXPORT ── */}
+        {tab==='export' && (
+          <div className="card">
+            <div className="card-header"><div className="card-title">Export for CoinLedger</div></div>
+            <div className="card-body">
+              <div className="info-banner">
+                <span style={{display:'flex',color:'var(--bitcoin-orange)'}}>{Icon.Link()}</span>
+                <div>Export as CSV in CoinLedger's Universal Manual Import format. <strong>Tip:</strong> Import directly without opening in Excel to avoid formatting issues.</div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:'1rem',marginTop:'.5rem'}}>
+                <div className="stat-card" style={{cursor:'pointer',border:'2px solid var(--bitcoin-orange)'}} onClick={exportNativeCSV}>
+                  <div className="stat-label" style={{color:'var(--bitcoin-orange)'}}>🔒 Tracker Backup</div>
+                  <div className="stat-value" style={{fontSize:'1.5rem'}}>{transactions.length}</div>
+                  <div className="stat-sub">Native format — use this to reimport</div>
+                </div>
+                <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>exportCSV(null)}>
+                  <div className="stat-label">All Transactions</div>
+                  <div className="stat-value" style={{fontSize:'1.5rem'}}>{transactions.length}</div>
+                  <div className="stat-sub">CoinLedger format — all years</div>
+                </div>
+                {years.map(y=>{
+                  const count = transactions.filter(t=>t.date.startsWith(y)).length;
+                  return (
+                    <div key={y} className="stat-card" style={{cursor:'pointer'}} onClick={()=>exportCSV(y)}>
+                      <div className="stat-label">{y}</div>
+                      <div className="stat-value" style={{fontSize:'1.5rem'}}>{count}</div>
+                      <div className="stat-sub">Click to export {y}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{marginTop:'1.5rem'}}>
+                <div style={{fontSize:'.8125rem',fontWeight:600,marginBottom:'.625rem',color:'var(--text-secondary)'}}>TYPE MAPPING</div>
+                <table style={{width:'100%',fontSize:'.8125rem'}}>
+                  <thead>
+                    <tr><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Your Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>CoinLedger Type</th><th style={{textAlign:'left',padding:'.5rem',background:'var(--bg-tertiary)'}}>Notes</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-buy">Buy</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>USD → BTC, price computed</td></tr>
+                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-sell">Sell</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Trade</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>BTC → USD, price computed</td></tr>
+                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-transfer">Transfer</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal + Deposit</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Two rows: sender Withdrawal + receiver Deposit. API-managed wallets (Coinbase) skip Withdrawal row.</td></tr>
+                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-consolidation">Consolidation</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Withdrawal (fee only)</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>UTXO consolidation: BTC stays in same wallet, only miner fee is deducted. Exported as a fee-only Withdrawal.</td></tr>
+                    <tr><td style={{padding:'.5rem'}}><span className="badge badge-reward">Reward</span></td><td style={{padding:'.5rem',fontFamily:'monospace'}}>Income</td><td style={{padding:'.5rem',color:'var(--text-secondary)'}}>Cashback, staking, etc.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── SETTINGS ── */}
+        {tab==='settings' && (
+          <>
+            {/* Cloud Sync */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Cloud Sync</div>
+                {syncState!=='disconnected' && (
+                  <div className={`sync-pill ${syncState}`}>
+                    <div className={`sync-dot ${syncState==='synced'?'connected':syncState==='syncing'?'syncing':'error'}`}/>
+                    {syncState==='syncing'?'Syncing…':syncState==='error'?'Error':'Connected'}
+                  </div>
+                )}
+              </div>
+              <div className="card-body">
+                {syncState==='disconnected' ? (
+                  <div>
+                    <div style={{display:'flex',alignItems:'center',gap:'1rem',marginBottom:'1rem'}}>
+                      <div style={{width:44,height:44,borderRadius:10,background:'var(--bg-tertiary)',border:'1px solid var(--border-color)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                        {Icon.Cloud({width:22,height:22,style:{color:'var(--text-tertiary)'}})}
+                      </div>
+                      <div>
+                        <div style={{fontSize:'.9375rem',fontWeight:600}}>Sync with Google Drive</div>
+                        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Sign in to automatically back up and sync your data across devices. Your data is stored privately in your Google Drive.</div>
+                      </div>
+                    </div>
+                    <button className="btn btn-primary" onClick={handleSignIn} style={{display:'inline-flex',alignItems:'center',gap:'.5rem'}}>
+                      {Icon.User({width:14,height:14})} Sign in with Google
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{display:'flex',alignItems:'center',gap:'1rem',marginBottom:'1.25rem'}}>
+                      <div style={{width:44,height:44,borderRadius:50,background:'var(--green-light)',border:'2px solid var(--green)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                        {Icon.Check({width:20,height:20,style:{color:'var(--green)'}})}
+                      </div>
+                      <div>
+                        <div style={{fontSize:'.9375rem',fontWeight:600}}>{syncUser?.name||syncUser?.email||'Connected'}</div>
+                        {syncUser?.email && <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{syncUser.email}</div>}
+                        {lastSync && <div style={{fontSize:'.75rem',color:'var(--text-tertiary)',marginTop:'.125rem'}}>Last synced {lastSync.toLocaleTimeString()}</div>}
+                      </div>
+                    </div>
+                    <div style={{display:'flex',gap:'.625rem',flexWrap:'wrap'}}>
+                      <button className="btn btn-secondary btn-sm" onClick={async()=>{
+                        setSyncState('syncing');
+                        try {
+                          const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
+                          const mod = new Date().toISOString();
+                          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+                          localStorage.setItem('btc-last-modified', mod);
+                          setSyncState('synced'); setLastSync(new Date()); showToast('Pushed to Google Drive');
+                        } catch { setSyncState('error'); showToast('Push failed'); }
+                      }} style={{display:'inline-flex',alignItems:'center',gap:'.375rem'}}>
+                        {Icon.Cloud({width:12,height:12})} Force Push
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={async()=>{
+                        setSyncState('syncing');
+                        try {
+                          const remote = await GDriveSync.pull();
+                          if(remote && remote.transactions) {
+                            setTransactions(remote.transactions);
+                            setWallets(remote.wallets||[]);
+                            if(remote.settings) { setSettings(remote.settings); localStorage.setItem('btc-settings', JSON.stringify(remote.settings)); }
+                            localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
+                            localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets||[]));
+                            localStorage.setItem('btc-last-modified', remote.lastModified||'');
+                            showToast('Pulled from Google Drive');
+                          } else { showToast('No remote data found'); }
+                          setSyncState('synced'); setLastSync(new Date());
+                        } catch { setSyncState('error'); showToast('Pull failed'); }
+                      }} style={{display:'inline-flex',alignItems:'center',gap:'.375rem'}}>
+                        {Icon.Refresh({width:12,height:12})} Force Pull
+                      </button>
+                      <button className="btn btn-secondary btn-sm" onClick={handleSignOut} style={{display:'inline-flex',alignItems:'center',gap:'.375rem',color:'var(--red)'}}>
+                        {Icon.LogOut({width:12,height:12})} Disconnect
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Appearance */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Appearance</div>
+              </div>
+              <div className="card-body">
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontSize:'.9375rem',fontWeight:600}}>Theme</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Switch between light and dark mode</div>
+                  </div>
+                  <button className="btn btn-secondary btn-sm" onClick={()=>setTheme(t=>t==='light'?'dark':'light')} style={{display:'flex',alignItems:'center',gap:'.375rem',minWidth:90,justifyContent:'center'}}>
+                    {theme==='light'?'🌙':'☀️'} {theme==='light'?'Dark':'Light'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Preferences */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Preferences</div>
+              </div>
+              <div className="card-body">
+                <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontSize:'.9375rem',fontWeight:600}}>Default Transaction Type</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Pre-selected type when adding a new transaction</div>
+                  </div>
+                  <select className="form-select" value={settings.defaultTxType||'Buy'} onChange={e=>updateSettings({defaultTxType:e.target.value})} style={{minWidth:140}}>
+                    <option>Buy</option><option>Sell</option><option>Transfer</option><option>Reward</option><option>Consolidation</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Data management */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Data Management</div>
+              </div>
+              <div className="card-body">
+
+                {/* Import CSV */}
+                <div style={{marginBottom:'1.5rem'}}>
+                  <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem'}}>Import Transactions</div>
+                  <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'.75rem'}}>
+                    Import a <strong>Tracker Backup CSV</strong> (from the Export tab) to restore your data. CoinLedger-format files are also supported. Transactions are appended to existing data.
+                  </div>
+                  <label className="btn btn-secondary" style={{cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'.375rem'}}>
+                    {Icon.Upload({width:13,height:13})} Import CSV
+                    <input type="file" accept=".csv" onChange={importCSV} style={{display:'none'}}/>
+                  </label>
+                </div>
+
+
+                {/* Delete all */}
+                <div>
+                  <div>
+                    <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem',color:'var(--red)'}}>Danger Zone</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>
+                      Reset your data. Export a Tracker Backup first if you want to restore later.
+                    </div>
+                    <button className="btn btn-danger" onClick={()=>setShowResetDialog(true)} style={{display:'inline-flex',alignItems:'center',gap:'.375rem'}}>
+                      {Icon.Trash({width:13,height:13})} Reset Data…
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* About */}
+            <div className="card">
+              <div className="card-header"><div className="card-title">About</div></div>
+              <div className="card-body">
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:'1rem'}}>
+                  {[
+                    ['Version','3.0'],
+                    ['Transactions',transactions.length],
+                    ['Wallets',wallets.length],
+                    ['Storage','localStorage'],
+                    ['Date range', transactions.length ? (() => { const dates = transactions.map(t=>t.date).filter(Boolean); const min = dates.reduce((a,b) => a < b ? a : b); const max = dates.reduce((a,b) => a > b ? a : b); return `${min} → ${max}`; })() : '—'],
+                    ['Last updated', new Date().toLocaleDateString()],
+                  ].map(([label,val])=>(
+                    <div key={label}>
+                      <div style={{fontSize:'.75rem',fontWeight:600,textTransform:'uppercase',letterSpacing:'.06em',color:'var(--text-tertiary)',marginBottom:'.25rem'}}>{label}</div>
+                      <div style={{fontSize:'.9375rem',fontWeight:500,fontFamily:typeof val==='number'?'JetBrains Mono':undefined}}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </main>
+
+      {/* ── Add/Edit Transaction Modal ── */}
+      {showModal && (
+        <div className="overlay" onClick={()=>{setShowModal(false);setEditIdx(null);}}>
+          <div className="modal" onClick={e=>e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{editIdx!==null?'Edit':'Add'} Transaction</div>
+              <button className="btn-icon" onClick={()=>{setShowModal(false);setEditIdx(null);}}>{Icon.X()}</button>
+            </div>
+            <div>
+              <div className="modal-body">
+                <div className="form-grid">
+                  <div className="form-group">
+                    <label className="form-label">Date</label>
+                    <input type="date" className="form-input" value={form.date} onChange={e=>setForm({...form,date:e.target.value})} required/>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Type</label>
+                    <select className="form-select" value={form.type} onChange={e=>setForm({...form,type:e.target.value})}>
+                      <option>Buy</option><option>Sell</option><option>Transfer</option><option>Reward</option><option>Consolidation</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">{form.type==='Transfer'?'From Wallet':'Wallet'}</label>
+                    <input list="wallet-list" className="form-input" placeholder="e.g. Gemini" value={form.wallet} onChange={e=>setForm({...form,wallet:e.target.value})}/>
+                    <datalist id="wallet-list">{wallets.map(w=><option key={w.id} value={w.name}/>)}</datalist>
+                  </div>
+                  {form.type==='Transfer' && (
+                    <div className="form-group">
+                      <label className="form-label">To Wallet</label>
+                      <input list="wallet-list" className="form-input" placeholder="e.g. Bitkey" value={form.wallet2} onChange={e=>setForm({...form,wallet2:e.target.value})}/>
+                    </div>
+                  )}
+                  <div className="form-group">
+                    <label className="form-label">Amount (BTC)</label>
+                    <input type="number" step="0.00000001" className="form-input" placeholder="0.00000000" value={form.amount} onChange={e=>{
+                      const amt = e.target.value;
+                      const price = parseFloat(form.price);
+                      const newTotal = (amt && price) ? (parseFloat(amt)*price).toFixed(2) : form.totalUsd;
+                      setForm({...form, amount:amt, totalUsd:newTotal});
+                    }} required/>
+                  </div>
+                  {(form.type==='Buy'||form.type==='Sell') && (
+                    <div className="form-group">
+                      <label className="form-label">Price per BTC</label>
+                      <div className="price-wrap">
+                        <input type="number" step="0.01" className="form-input" placeholder={btcPrice?btcPrice.toFixed(2):"0.00"} value={form.price} onChange={e=>{
+                          const p = e.target.value;
+                          const amt = parseFloat(form.amount);
+                          const newTotal = (p && amt) ? (parseFloat(p)*amt).toFixed(2) : '';
+                          setForm({...form, price:p, totalUsd:newTotal});
+                        }}/>
+                        <button type="button" className="price-refresh" onClick={async()=>{
+                          const p=await fetchPrice();
+                          if(p) {
+                            const amt = parseFloat(form.amount);
+                            const newTotal = amt ? (p*amt).toFixed(2) : '';
+                            setForm(f=>({...f, price:p.toFixed(2), totalUsd:newTotal}));
+                          }
+                        }} title="Use live price">{Icon.Refresh({width:13,height:13})}</button>
+                      </div>
+                    </div>
+                  )}
+                  {(form.type==='Buy'||form.type==='Sell') && (
+                    <div className="form-group">
+                      <label className="form-label">Total USD</label>
+                      <input type="number" step="0.01" className="form-input" placeholder="0.00" value={form.totalUsd} onChange={e=>{
+                        const usd = e.target.value;
+                        const amt = parseFloat(form.amount);
+                        const newPrice = (usd && amt) ? (parseFloat(usd)/amt).toFixed(2) : '';
+                        setForm({...form, totalUsd:usd, price:newPrice});
+                      }}/>
+                    </div>
+                  )}
+                  <div className="form-group">
+                    <label className="form-label">Fee {form.type==='Transfer'?'(BTC)':'(USD)'}</label>
+                    <input type="number" step={form.type==='Transfer'?'0.00000001':'0.01'} className="form-input" placeholder="0" value={form.fee} onChange={e=>setForm({...form,fee:e.target.value})}/>
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">TxHash (optional)</label>
+                    <input className="form-input" placeholder="On-chain transaction hash" value={form.txhash} onChange={e=>setForm({...form,txhash:e.target.value})} style={{fontFamily:'JetBrains Mono',fontSize:'.75rem'}}/>
+                  </div>
+                  <div className="form-group full">
+                    <label className="form-label">Notes</label>
+                    <input className="form-input" placeholder="Optional description" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+                  </div>
+                  <div className="form-group full">
+                    <label style={{display:'flex',alignItems:'center',gap:'.5rem',fontSize:'.8125rem',color:'var(--text-secondary)',cursor:'pointer'}}>
+                      <input type="checkbox" checked={form.excludeStats||false} onChange={e=>setForm({...form,excludeStats:e.target.checked})} style={{accentColor:'var(--bitcoin-orange)'}}/>
+                      Exclude from charts & statistics
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={()=>{setShowModal(false);setEditIdx(null);}}>Cancel</button>
+                <button type="button" className="btn btn-primary" onClick={handleSubmit}>{editIdx!==null?'Update':'Add'} Transaction</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add/Edit Wallet Modal ── */}
+      {showWalletModal && (
+        <div className="overlay" onClick={()=>setShowWalletModal(false)}>
+          <div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">{editWalletIdx!==null?'Edit':'Add'} Wallet</div>
+              <button className="btn-icon" onClick={()=>setShowWalletModal(false)}>{Icon.X()}</button>
+            </div>
+            <div>
+              <div className="modal-body">
+                <div className="form-group" style={{marginBottom:'1rem'}}>
+                  <label className="form-label">Name</label>
+                  <input className="form-input" placeholder="e.g. Bitkey Cold Storage" value={walletForm.name} onChange={e=>setWalletForm({...walletForm,name:e.target.value})} required/>
+                </div>
+                <div className="form-group" style={{marginBottom:'1rem'}}>
+                  <label className="form-label">Type</label>
+                  <select className="form-select" value={walletForm.type} onChange={e=>setWalletForm({...walletForm,type:e.target.value})}>
+                    <option>Exchange</option><option>Wallet</option><option>Cold Storage</option><option>Other</option>
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Bitcoin Address (optional)</label>
+                  <input className="form-input" placeholder="bc1q…" value={walletForm.address} onChange={e=>setWalletForm({...walletForm,address:e.target.value})} style={{fontFamily:'JetBrains Mono',fontSize:'.75rem'}}/>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={()=>setShowWalletModal(false)}>Cancel</button>
+                <button type="button" className="btn btn-primary" onClick={handleWalletSubmit}>{editWalletIdx!==null?'Update':'Add'} Wallet</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── TRANSFER WIZARD ── */}
+      {showWizard && <TransferWizard
+        transactions={transactions}
+        wallets={wallets}
+        wizardStep={wizardStep}
+        setWizardStep={setWizardStep}
+        wizardEdits={wizardEdits}
+        setWizardEdits={setWizardEdits}
+        setShowWizard={setShowWizard}
+        setTransactions={setTransactions}
+        save={save}
+        showToast={showToast}
+      />}
+
+
+      {/* ── Reset Data Dialog ── */}
+      {showResetDialog && <ResetDialog
+        transactions={transactions}
+        wallets={wallets}
+        onClose={()=>setShowResetDialog(false)}
+        onReset={(keepWallets) => {
+          localStorage.removeItem('btc-tx-v2');
+          if(!keepWallets) {
+            localStorage.removeItem('btc-wallets');
+            setWallets([...DEFAULT_WALLETS]);
+          }
+          setTransactions(PRELOADED_TRANSACTIONS);
+          if(keepWallets) save(PRELOADED_TRANSACTIONS, wallets);
+          setShowResetDialog(false);
+          showToast(keepWallets ? 'Transactions cleared — wallets kept' : 'All data reset');
+        }}
+      />}
+
+      {/* Toast */}
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+function ResetDialog({ transactions, wallets, onClose, onReset }) {
+  const [keepWallets, setKeepWallets] = React.useState(true);
+  const [confirmText, setConfirmText] = React.useState('');
+  const canConfirm = confirmText.toLowerCase() === 'reset';
+  const activeWallets = wallets.filter(w => !w.archived);
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header" style={{background:'var(--red-light)',borderBottom:'1px solid var(--red)'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'.625rem'}}>
+            <span style={{color:'var(--red)',display:'flex'}}>{Icon.Warning({width:20,height:20})}</span>
+            <div className="modal-title" style={{color:'var(--red)'}}>Reset Data</div>
+          </div>
+          <button className="btn-icon" onClick={onClose}>{Icon.X()}</button>
+        </div>
+
+        <div className="modal-body" style={{padding:'1.5rem'}}>
+          {/* What will be deleted */}
+          <div style={{marginBottom:'1.25rem'}}>
+            <div style={{fontSize:'.8125rem',fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:'.75rem'}}>This will permanently delete</div>
+            <div style={{background:'var(--bg-tertiary)',borderRadius:10,padding:'1rem 1.25rem',border:'1px solid var(--border-color)'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'.5rem'}}>
+                <span style={{fontSize:'.875rem',color:'var(--text-primary)'}}>All transactions</span>
+                <span style={{fontFamily:'JetBrains Mono',fontSize:'.8125rem',fontWeight:600,color:'var(--red)'}}>{transactions.length}</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',opacity:keepWallets?.4:1,transition:'opacity .2s'}}>
+                <span style={{fontSize:'.875rem',color:'var(--text-primary)',textDecoration:keepWallets?'line-through':'none'}}>{keepWallets?'Wallets (kept)':'All wallets'}</span>
+                <span style={{fontFamily:'JetBrains Mono',fontSize:'.8125rem',fontWeight:600,color:keepWallets?'var(--green)':'var(--red)'}}>{keepWallets?'✓ kept':activeWallets.length}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Keep wallets toggle */}
+          <div style={{background:'var(--bg-tertiary)',borderRadius:10,padding:'1rem 1.25rem',border:'1px solid var(--border-color)',marginBottom:'1.25rem',cursor:'pointer',transition:'border-color .15s',borderColor:keepWallets?'var(--green)':'var(--border-color)'}} onClick={()=>setKeepWallets(k=>!k)}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'.75rem'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'.75rem'}}>
+                <div style={{width:38,height:22,borderRadius:11,background:keepWallets?'var(--green)':'var(--border-color)',transition:'background .2s',position:'relative',flexShrink:0,cursor:'pointer'}}>
+                  <div style={{width:16,height:16,borderRadius:8,background:'#fff',position:'absolute',top:3,left:keepWallets?19:3,transition:'left .2s',boxShadow:'0 1px 3px rgba(0,0,0,.2)'}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:'.875rem',fontWeight:600}}>Keep my wallets</div>
+                  <div style={{fontSize:'.75rem',color:'var(--text-secondary)',marginTop:'.125rem'}}>Preserve {activeWallets.length} wallet{activeWallets.length!==1?'s':''} and their settings</div>
+                </div>
+              </div>
+            </div>
+            {keepWallets && activeWallets.length > 0 && (
+              <div style={{display:'flex',flexWrap:'wrap',gap:'.375rem',marginTop:'.75rem',paddingTop:'.75rem',borderTop:'1px solid var(--border-color)'}}>
+                {activeWallets.slice(0,8).map(w=>(
+                  <span key={w.id} style={{fontSize:'.6875rem',fontWeight:600,padding:'.2rem .5rem',borderRadius:5,background:'var(--bitcoin-light)',color:'var(--bitcoin-orange)'}}>{w.name}</span>
+                ))}
+                {activeWallets.length>8 && <span style={{fontSize:'.6875rem',color:'var(--text-tertiary)',padding:'.2rem 0'}}>+{activeWallets.length-8} more</span>}
+              </div>
+            )}
+          </div>
+
+          {/* Type RESET to confirm */}
+          <div>
+            <div style={{fontSize:'.8125rem',fontWeight:500,color:'var(--text-secondary)',marginBottom:'.5rem'}}>
+              Type <strong style={{color:'var(--red)',fontFamily:'JetBrains Mono',letterSpacing:'.05em'}}>RESET</strong> to confirm
+            </div>
+            <input
+              className="form-input"
+              placeholder="Type RESET"
+              value={confirmText}
+              onChange={e=>setConfirmText(e.target.value)}
+              autoFocus
+              style={{width:'100%',fontFamily:'JetBrains Mono',textAlign:'center',fontSize:'.9375rem',letterSpacing:'.08em',borderColor:canConfirm?'var(--red)':'var(--border-color)'}}
+            />
+          </div>
+        </div>
+
+        <div className="modal-footer" style={{borderTop:'1px solid var(--border-color)'}}>
+          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            className="btn"
+            disabled={!canConfirm}
+            onClick={()=>onReset(keepWallets)}
+            style={{
+              background:canConfirm?'var(--red)':'var(--bg-tertiary)',
+              color:canConfirm?'#fff':'var(--text-tertiary)',
+              border:'none',
+              cursor:canConfirm?'pointer':'not-allowed',
+              transition:'all .2s',
+            }}
+          >
+            {Icon.Trash({width:13,height:13})} {keepWallets ? 'Reset Transactions' : 'Reset Everything'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WizardWalletSelect({ label, value, wallets, onChange }) {
+  const [custom, setCustom] = React.useState(false);
+  const isKnown = wallets.some(w => w.name === value);
+
+  // If value is set but not in list, show custom input
+  React.useEffect(() => {
+    if(value && !wallets.some(w => w.name === value)) setCustom(true);
+  }, []);
+
+  return (
+    <div>
+      <div className="wizard-field-label">{label}</div>
+      {!custom ? (
+        <select
+          className="form-select"
+          style={{width:'100%'}}
+          value={value}
+          onChange={ev => {
+            if(ev.target.value === '__custom__') { setCustom(true); onChange(''); }
+            else onChange(ev.target.value);
+          }}
+        >
+          <option value="">— Select wallet —</option>
+          {wallets.map(w => <option key={w.id} value={w.name}>{w.name}</option>)}
+          <option value="__custom__">Other (type manually)...</option>
+        </select>
+      ) : (
+        <div style={{display:'flex',gap:'.375rem'}}>
+          <input
+            className="form-input"
+            style={{flex:1}}
+            placeholder="Type wallet name"
+            autoFocus
+            value={value}
+            onChange={ev => onChange(ev.target.value)}
+          />
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => { setCustom(false); onChange(''); }}
+            title="Back to list"
+          >{Icon.X({width:12,height:12})}</button>
+        </div>
+      )}
+      {!value && <div className="wizard-missing">{Icon.Warning({width:12,height:12})} Required</div>}
+    </div>
+  );
+}
+
+
+function TransferWizard({ transactions, wallets, wizardStep, setWizardStep, wizardEdits, setWizardEdits, setShowWizard, setTransactions, save, showToast }) {
+  const incomplete = transactions
+    .map((t,i)=>({...t,_idx:i}))
+    .filter(t=>t.type==='Transfer'&&(!t.wallet||!t.wallet2)); // Consolidation excluded — same-wallet fee tx
+  const total = incomplete.length;
+  const isIntro = wizardStep===0;
+  const isSummary = wizardStep===total+1;
+  const currentTx = (!isIntro&&!isSummary) ? incomplete[wizardStep-1] : null;
+  const edit = currentTx ? (wizardEdits[currentTx._idx]||{wallet:currentTx.wallet||'',wallet2:currentTx.wallet2||'',skip:false}) : null;
+
+  const setEdit = (field, val) => {
+    if(!currentTx) return;
+    const existing = wizardEdits[currentTx._idx] || {wallet:currentTx.wallet||'', wallet2:currentTx.wallet2||'', skip:false};
+    setWizardEdits(prev => ({...prev, [currentTx._idx]: {...existing, [field]: val}}));
+  };
+
+  const saveCurrentAndNext = () => {
+    // Save the current tx immediately if it has both wallets set
+    if(currentTx && edit && !edit.skip && edit.wallet && edit.wallet2) {
+      const updated = [...transactions];
+      updated[currentTx._idx] = {...updated[currentTx._idx], wallet: edit.wallet, wallet2: edit.wallet2};
+      setTransactions(updated);
+      save(updated, wallets);
+    }
+    setWizardStep(s => s+1);
+  };
+
+  const applyAll = () => {
+    // Apply any remaining unapplied edits (e.g. ones revisited via Back)
+    let updated = [...transactions];
+    Object.entries(wizardEdits).forEach(([idxStr,e]) => {
+      if(e.skip) return;
+      const i = parseInt(idxStr);
+      updated[i] = {...updated[i], wallet: e.wallet||updated[i].wallet, wallet2: e.wallet2||updated[i].wallet2};
+    });
+    setTransactions(updated);
+    save(updated, wallets);
+    setShowWizard(false);
+    showToast('All transfers saved');
+  };
+
+  // Keyboard navigation
+  React.useEffect(() => {
+    const handler = (e) => {
+      // Don't capture when typing in an input/select
+      if(e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+      if(e.key === 'ArrowRight' || e.key === 'Enter') {
+        e.preventDefault();
+        if(isSummary) applyAll();
+        else if(isIntro) setWizardStep(s => s+1);
+        else saveCurrentAndNext();
+      } else if(e.key === 'ArrowLeft' && wizardStep > 0) {
+        e.preventDefault();
+        setWizardStep(s => s-1);
+      } else if(e.key === 'Escape') {
+        e.preventDefault();
+        setShowWizard(false);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  });
+
+  const doneCount = Object.values(wizardEdits).filter(e=>!e.skip&&e.wallet&&e.wallet2).length;
+  const skipCount = Object.values(wizardEdits).filter(e=>e.skip).length;
+
+  return (
+          <div className="wizard-overlay" onClick={()=>setShowWizard(false)}>
+            <div className="wizard" onClick={e=>e.stopPropagation()}>
+
+              {/* Header */}
+              <div className="wizard-header">
+                <div className="wizard-progress">
+                  {[...Array(total+2)].map((_,i)=>(
+                    <div key={i} className={`wizard-step-dot ${i<wizardStep?'done':i===wizardStep?'active':''}`}/>
+                  ))}
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div>
+                    <div className="wizard-title">
+                      {isIntro ? 'Transfer Wallet Wizard' : isSummary ? 'Review & Apply' : `Transfer ${wizardStep} of ${total}`}
+                    </div>
+                    <div className="wizard-subtitle">
+                      {isIntro ? `${total} transfer${total!==1?'s':''} need wallet assignments` :
+                       isSummary ? `${doneCount} fixed · ${skipCount} skipped · ${total-doneCount-skipCount} remaining` :
+                       fmtDate(currentTx?.date)+' · '+parseFloat(currentTx?.amount||0).toFixed(8)+' BTC'}
+                    </div>
+                  </div>
+                  <button className="btn-icon" onClick={()=>setShowWizard(false)}>{Icon.X()}</button>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="wizard-body">
+
+                {/* INTRO STEP */}
+                {isIntro && (
+                  <div>
+                    <div style={{textAlign:'center',padding:'1rem 0 1.5rem'}}>
+                      <div style={{fontSize:'3rem',marginBottom:'1rem'}}>↔️</div>
+                      <div style={{fontSize:'1rem',fontWeight:600,marginBottom:'.5rem'}}>Assign wallets to your transfers</div>
+                      <div style={{fontSize:'.875rem',color:'var(--text-secondary)',maxWidth:400,margin:'0 auto',lineHeight:1.7}}>
+                        Each transfer needs a <strong>From</strong> and <strong>To</strong> wallet to track where your BTC moved. We'll walk through each one so you can assign or skip.
+                      </div>
+                    </div>
+                    <div style={{background:'var(--bg-tertiary)',borderRadius:10,padding:'1rem 1.25rem'}}>
+                      {incomplete.slice(0,5).map((tx,i)=>(
+                        <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'.375rem 0',borderBottom:i<Math.min(incomplete.length,5)-1?'1px solid var(--border-color)':'none',fontSize:'.8125rem'}}>
+                          <span style={{color:'var(--text-secondary)'}}>{fmtDate(tx.date)}</span>
+                          <span style={{fontFamily:'JetBrains Mono',color:'var(--bitcoin-orange)',fontWeight:600}}>{parseFloat(tx.amount||0).toFixed(8)} BTC</span>
+                          <span style={{color:'#d97706',fontSize:'.75rem',fontWeight:600}}>
+                            {!tx.wallet&&!tx.wallet2?'Missing both':!tx.wallet?'Missing From':'Missing To'}
+                          </span>
+                        </div>
+                      ))}
+                      {incomplete.length>5 && <div style={{fontSize:'.75rem',color:'var(--text-tertiary)',textAlign:'center',paddingTop:'.5rem'}}>+{incomplete.length-5} more</div>}
+                    </div>
+                  </div>
+                )}
+
+                {/* TX REVIEW STEP */}
+                {!isIntro && !isSummary && currentTx && edit && (
+                  <div>
+                    <div className={`wizard-tx-card ${edit.skip?'skipped':(!edit.wallet||!edit.wallet2)?'needs-fix':'fixed'}`}>
+                      <div className="wizard-tx-meta">
+                        <span className="wizard-tx-amount">{parseFloat(currentTx.amount||0).toFixed(8)} BTC</span>
+                        <span className="wizard-tx-date">{fmtDate(currentTx.date)}</span>
+                        {currentTx.fee && <span style={{fontSize:'.75rem',color:'var(--text-tertiary)'}}>fee: {currentTx.fee} BTC</span>}
+                      </div>
+                      {currentTx.notes && <div className="wizard-tx-notes">"{currentTx.notes}"</div>}
+                    </div>
+
+                    {edit.skip ? (
+                      <div style={{textAlign:'center',padding:'1rem',color:'var(--text-secondary)',fontSize:'.875rem'}}>
+                        This transfer will be skipped.
+                        <button className="btn btn-secondary btn-sm" style={{display:'block',margin:'.75rem auto 0'}}
+                          onClick={()=>setEdit('skip',false)}>Undo Skip</button>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:".75rem",alignItems:"start"}}>
+                          <WizardWalletSelect
+                            label="From Wallet"
+                            value={edit.wallet}
+                            wallets={wallets}
+                            onChange={v=>setEdit('wallet',v)}
+                          />
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"center",paddingTop:"1.375rem",color:"var(--text-tertiary)",fontSize:"1.25rem"}}>→</div>
+                          <WizardWalletSelect
+                            label="To Wallet"
+                            value={edit.wallet2}
+                            wallets={wallets}
+                            onChange={v=>setEdit('wallet2',v)}
+                          />
+                        </div>
+                        {edit.wallet && edit.wallet2 && (
+                          <div style={{marginTop:'1rem',background:'var(--green-light)',borderRadius:8,padding:'.625rem 1rem',fontSize:'.8125rem',color:'var(--green)',fontWeight:600,display:'flex',alignItems:'center',gap:'.5rem'}}>
+                            ✓ Ready: {edit.wallet} → {edit.wallet2}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* SUMMARY STEP */}
+                {isSummary && (
+                  <div>
+                    <div style={{marginBottom:'1.25rem'}}>
+                      <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'.75rem',marginBottom:'1.25rem'}}>
+                        {[
+                          ['Ready to apply',doneCount,'var(--green)'],
+                          ['Skipped',skipCount,'var(--text-secondary)'],
+                          ['Still incomplete',total-doneCount-skipCount,'#d97706'],
+                        ].map(([label,val,color])=>(
+                          <div key={label} style={{background:'var(--bg-tertiary)',borderRadius:10,padding:'.875rem',textAlign:'center'}}>
+                            <div style={{fontSize:'1.5rem',fontWeight:700,fontFamily:'JetBrains Mono',color}}>{val}</div>
+                            <div style={{fontSize:'.75rem',color:'var(--text-secondary)',marginTop:'.25rem'}}>{label}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {Object.entries(wizardEdits).filter(([,e])=>!e.skip&&e.wallet&&e.wallet2).map(([idxStr,e])=>{
+                        const tx = transactions[parseInt(idxStr)];
+                        return (
+                          <div key={idxStr} className="wizard-summary-row">
+                            <span style={{color:'var(--text-secondary)',fontSize:'.8125rem'}}>{fmtDate(tx?.date)}</span>
+                            <span style={{fontFamily:'JetBrains Mono',fontSize:'.8125rem',color:'var(--bitcoin-orange)'}}>{parseFloat(tx?.amount||0).toFixed(8)}</span>
+                            <span style={{fontSize:'.8125rem',fontWeight:500}}>{e.wallet} → {e.wallet2}</span>
+                            <span style={{color:'var(--green)',fontSize:'.8125rem'}}>✓</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="wizard-footer">
+                <div style={{display:'flex',alignItems:'center',gap:'.75rem'}}>
+                  {!isIntro && !isSummary && (
+                    <button className="btn btn-secondary btn-sm" onClick={()=>setEdit('skip',!edit?.skip)}>
+                      {edit?.skip ? 'Undo Skip' : 'Skip for Now'}
+                    </button>
+                  )}
+                  <span style={{fontSize:'.6875rem',color:'var(--text-tertiary)',whiteSpace:'nowrap'}} className="desktop-only">← → to navigate · Esc to close</span>
+                </div>
+                <div style={{display:'flex',gap:'.625rem'}}>
+                  {wizardStep>0 && (
+                    <button className="btn btn-secondary" onClick={()=>setWizardStep(s=>s-1)}>← Back</button>
+                  )}
+                  {!isSummary && (
+                    <button
+                      className="btn btn-primary"
+                      onClick={isIntro ? ()=>setWizardStep(s=>s+1) : saveCurrentAndNext}
+                    >
+                      {isIntro ? 'Start →' : wizardStep===total ? 'Review →' : 'Next →'}
+                    </button>
+                  )}
+                  {isSummary && (
+                    <button className="btn btn-primary" onClick={applyAll}>
+                      Done
+                    </button>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById('root'));
+</script>
+</body>
+</html>
