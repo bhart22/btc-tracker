@@ -507,6 +507,32 @@ const PRELOADED_TRANSACTIONS = [];
 const DEFAULT_WALLETS = [];
 
 const PAGE_SIZE = 50;
+const HISTORICAL_PRICE_CACHE_KEY = 'btc-price-history-v1';
+const dayKeyUTC = ts => new Date(ts).toISOString().slice(0,10);
+const addDaysUTC = (dateStr, days) => {
+  const dt = new Date(dateStr+'T00:00:00Z');
+  dt.setUTCDate(dt.getUTCDate()+days);
+  return dt.toISOString().slice(0,10);
+};
+const listDaysUTC = (startDate, endDate) => {
+  const days = [];
+  for(let d=startDate; d<=endDate; d=addDaysUTC(d,1)) days.push(d);
+  return days;
+};
+const fillDailyPriceGaps = (priceMap, startDate, endDate) => {
+  const next = {...priceMap};
+  let lastKnown = null;
+  listDaysUTC(startDate, endDate).forEach(day => {
+    if(next[day]!==undefined) lastKnown = next[day];
+    else if(lastKnown!==null) next[day] = lastKnown;
+  });
+  let nextKnown = null;
+  listDaysUTC(startDate, endDate).reverse().forEach(day => {
+    if(next[day]!==undefined) nextKnown = next[day];
+    else if(nextKnown!==null) next[day] = nextKnown;
+  });
+  return next;
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const fmtBTC = v => parseFloat(v||0).toFixed(8);
@@ -552,18 +578,27 @@ const NAV_ITEMS = [
 ];
 
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
-function DashboardCharts({ transactions, wallets, btcPrice }) {
-  const chartData = React.useMemo(() => {
+function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading }) {
+  const { chartData, holdingsHistory } = React.useMemo(() => {
     // Use all wallets for full history; excluded transactions skip cost basis only.
     const sorted = [...transactions].sort((a,b) => a.date.localeCompare(b.date));
+    const activeWalletSet = new Set(wallets.filter(w => !w.archived).map(w => w.name));
     let totalCost = 0;
-    const points = [];
+    let activeHoldingsBTC = 0;
+    const walletBalances = {};
+    const points = [], holdingsPoints = [];
     let runningBTC = 0;
     let runningBTCForCost = 0;
+    const ensureWallet = (name) => {
+      if(!name) return;
+      if(walletBalances[name]===undefined) walletBalances[name]=0;
+    };
     sorted.forEach(tx => {
       const amt = parseFloat(tx.amount)||0;
       const fee = parseFloat(tx.fee)||0;
       const price = parseFloat(tx.price)||0;
+      const w1 = tx.wallet;
+      const w2 = tx.wallet2;
 
       // Always track BTC balance
       if(tx.type==='Buy'||tx.type==='Reward') { runningBTC+=amt; }
@@ -582,26 +617,61 @@ function DashboardCharts({ transactions, wallets, btcPrice }) {
         else if(tx.type==='Consolidation') { runningBTCForCost-=fee; }
       }
 
+      // Track active-wallet holdings history for dashboard value charts.
+      ensureWallet(w1);
+      ensureWallet(w2);
+      if(tx.type==='Buy'||tx.type==='Reward') { if(w1) walletBalances[w1]+=amt; }
+      else if(tx.type==='Sell') { if(w1) walletBalances[w1]-=amt; }
+      else if(tx.type==='Transfer') {
+        if(w1) walletBalances[w1]-=(amt+fee);
+        if(w2) walletBalances[w2]+=amt;
+      } else if(tx.type==='Consolidation') {
+        if(w1) walletBalances[w1]-=fee;
+      }
+      activeHoldingsBTC = Object.entries(walletBalances)
+        .filter(([name]) => activeWalletSet.has(name))
+        .reduce((sum, [, bal]) => sum + bal, 0);
+
       const totalBTC = runningBTC;
       const avgCost = runningBTCForCost>0.00000001 ? totalCost/runningBTCForCost : null;
       const pt = { date:tx.date, btc:+totalBTC.toFixed(8), avgCost:avgCost!==null ? +avgCost.toFixed(2) : null };
+      const holdingsPt = { date:tx.date, holdingsBtc:+activeHoldingsBTC.toFixed(8) };
       const last = points[points.length-1];
       if(last && last.date===tx.date) points[points.length-1]=pt;
       else points.push(pt);
+      const lastHoldings = holdingsPoints[holdingsPoints.length-1];
+      if(lastHoldings && lastHoldings.date===tx.date) holdingsPoints[holdingsPoints.length-1]=holdingsPt;
+      else holdingsPoints.push(holdingsPt);
     });
     // Trim leading zero-BTC points
     while(points.length > 1 && points[0].btc < 0.00000001) {
       points.shift();
     }
-    return points;
+    while(holdingsPoints.length > 1 && holdingsPoints[0].holdingsBtc < 0.00000001) {
+      holdingsPoints.shift();
+    }
+    return { chartData: points, holdingsHistory: holdingsPoints };
   }, [transactions, wallets]);
 
   const costData = React.useMemo(() => chartData.filter(d=>d.avgCost!==null), [chartData]);
+  const usdHoldingsData = React.useMemo(() => {
+    return holdingsHistory.map(d => ({
+      date: d.date,
+      holdingsUsd: historicalPrices[d.date]!==undefined ? +(d.holdingsBtc * historicalPrices[d.date]).toFixed(2) : null,
+    })).filter(d => d.holdingsUsd!==null);
+  }, [holdingsHistory, historicalPrices]);
 
   if(!chartData.length) return null;
 
+  const fmtCompactUSD = (v) => {
+    const abs = Math.abs(v);
+    if(abs >= 1000000) return '$'+(v/1000000).toFixed(1).replace(/\.0$/,'')+'M';
+    if(abs >= 1000) return '$'+(v/1000).toFixed(0)+'k';
+    return '$'+Math.round(v);
+  };
+
   return (
-    <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'1rem'}}>
+    <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
       <SVGChart
         data={chartData}
         dataKey="btc"
@@ -627,6 +697,27 @@ function DashboardCharts({ transactions, wallets, btcPrice }) {
         refLineColor="#16a34a"
         refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
       />}
+      {usdHoldingsData.length > 0 && <SVGChart
+        data={usdHoldingsData}
+        dataKey="holdingsUsd"
+        title="USD Holdings Value"
+        subtitle={`${fmtUSD(usdHoldingsData[usdHoldingsData.length-1]?.holdingsUsd||0)} using daily BTC closes`}
+        color="#f59e0b"
+        formatY={fmtCompactUSD}
+        formatTooltip={(v)=>`${fmtUSD(v)} at daily close`}
+        fillGradient={true}
+      />}
+      {historicalPriceLoading && !usdHoldingsData.length && (
+        <div className="card">
+          <div className="card-header">
+            <div className="card-title">USD Holdings Value</div>
+            <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>Loading daily BTC closes…</div>
+          </div>
+          <div className="card-body" style={{color:'var(--text-secondary)'}}>
+            Building historical USD values from Coinbase daily BTC-USD candles.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -820,6 +911,11 @@ function App() {
   const syncDebounce = useRef(null);
   const syncInitialized = useRef(false);
   const [btcPrice, setBtcPrice] = useState(null);
+  const [historicalPrices, setHistoricalPrices] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(HISTORICAL_PRICE_CACHE_KEY)||'{}'); }
+    catch { return {}; }
+  });
+  const [historicalPriceLoading, setHistoricalPriceLoading] = useState(false);
   const [priceLoading, setPriceLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
@@ -833,6 +929,10 @@ function App() {
   const [walletForm, setWalletForm] = useState({name:'',type:'Exchange',address:''});
   const [showArchived, setShowArchived] = useState(false);
   const [showTypeMapping, setShowTypeMapping] = useState(false);
+  const firstTransactionDate = useMemo(() => {
+    if(!transactions.length) return null;
+    return transactions.reduce((min, tx) => !min || tx.date < min ? tx.date : min, null);
+  }, [transactions]);
 
   // Active wallets (not archived) vs all wallets (for stats)
   const activeWallets = useMemo(() => wallets.filter(w => !w.archived), [wallets]);
@@ -900,6 +1000,50 @@ function App() {
   }, []);
 
   useEffect(() => { fetchPrice(); }, []);
+  useEffect(() => {
+    if(!firstTransactionDate) {
+      setHistoricalPrices({});
+      return;
+    }
+    let cancelled = false;
+    const loadHistoricalPrices = async () => {
+      setHistoricalPriceLoading(true);
+      try {
+        const today = dayKeyUTC(Date.now());
+        const cached = (() => {
+          try { return JSON.parse(localStorage.getItem(HISTORICAL_PRICE_CACHE_KEY)||'{}'); }
+          catch { return {}; }
+        })();
+        const requiredDays = listDaysUTC(firstTransactionDate, today);
+        const refreshStart = addDaysUTC(today, -2);
+        const firstMissingDay = requiredDays.find(day => cached[day]===undefined);
+        const fetchStart = firstMissingDay && firstMissingDay < refreshStart ? firstMissingDay : refreshStart > firstTransactionDate ? refreshStart : firstTransactionDate;
+        let merged = {...cached};
+        for(let cursor = fetchStart; cursor <= today; cursor = addDaysUTC(cursor, 300)) {
+          const endExclusive = addDaysUTC(cursor, 300);
+          const url = `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=86400&start=${cursor}T00:00:00Z&end=${endExclusive}T00:00:00Z`;
+          const r = await fetch(url);
+          if(!r.ok) throw new Error('historical_price_fetch_failed');
+          const candles = await r.json();
+          candles.forEach(row => {
+            const [time,,,,close] = row;
+            merged[dayKeyUTC(time*1000)] = close;
+          });
+        }
+        merged = fillDailyPriceGaps(merged, firstTransactionDate, today);
+        if(cancelled) return;
+        setHistoricalPrices(merged);
+        localStorage.setItem(HISTORICAL_PRICE_CACHE_KEY, JSON.stringify(merged));
+      } catch(e) {
+        console.error('Historical price fetch failed:', e);
+        if(!cancelled) showToast('Could not fetch BTC price history');
+      } finally {
+        if(!cancelled) setHistoricalPriceLoading(false);
+      }
+    };
+    loadHistoricalPrices();
+    return () => { cancelled = true; };
+  }, [firstTransactionDate, transactions.length]);
 
   // ─── Google Drive Sync ────────────────────────────────────────────────────
   const handleSignIn = useCallback(async () => {
@@ -1372,7 +1516,7 @@ function App() {
           </button>
           <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
         </div>
-        <div className="sidebar-version">v3.23</div>
+        <div className="sidebar-version">v3.24</div>
       </nav>
 
       <div className="app-body">
@@ -1392,7 +1536,7 @@ function App() {
             </button>
             <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
           </div>
-          <div className="sidebar-version">v3.23</div>
+          <div className="sidebar-version">v3.24</div>
         </aside>
 
         <main className="main">
@@ -1495,7 +1639,7 @@ function App() {
             </div>
 
             {/* ── Charts ── */}
-            <DashboardCharts transactions={transactions} wallets={wallets} btcPrice={btcPrice} />
+            <DashboardCharts transactions={transactions} wallets={wallets} btcPrice={btcPrice} historicalPrices={historicalPrices} historicalPriceLoading={historicalPriceLoading} />
           </>
         )}
 
