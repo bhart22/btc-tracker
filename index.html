@@ -150,7 +150,7 @@
       async push(data) {
         await this.ensureToken();
         const body = JSON.stringify(data);
-        console.log('[GDrive] push:', data?.transactions?.length, 'transactions');
+        console.log('[GDrive] push:', data?.transactions?.length, 'transactions', data?.vault ? 'with vault' : 'without vault');
         
         // Always search for existing file first
         if(!this.fileId) await this.findFile();
@@ -508,6 +508,9 @@ const DEFAULT_WALLETS = [];
 
 const PAGE_SIZE = 50;
 const HISTORICAL_PRICE_CACHE_KEY = 'btc-price-history-v1';
+const VAULT_STORAGE_KEY = 'btc-vault';
+const VAULT_SCHEMA_VERSION = 1;
+const VAULT_PBKDF2_ITERATIONS = 250000;
 const dayKeyUTC = ts => new Date(ts).toISOString().slice(0,10);
 const addDaysUTC = (dateStr, days) => {
   const dt = new Date(dateStr+'T00:00:00Z');
@@ -533,6 +536,74 @@ const fillDailyPriceGaps = (priceMap, startDate, endDate) => {
   });
   return next;
 };
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const toBase64 = bytes => btoa(String.fromCharCode(...bytes));
+const fromBase64 = str => Uint8Array.from(atob(str), c => c.charCodeAt(0));
+const emptyVaultDraft = () => ({
+  overview: '',
+  deviceLocations: '',
+  recoverySteps: '',
+  contacts: '',
+  warnings: '',
+  estateNotes: '',
+  notes: '',
+});
+const hasVaultContent = draft => Object.values(draft).some(v => String(v||'').trim());
+async function deriveVaultKey(passphrase, salt, usage=['encrypt','decrypt']) {
+  const baseKey = await crypto.subtle.importKey('raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', salt, iterations: VAULT_PBKDF2_ITERATIONS, hash:'SHA-256' },
+    baseKey,
+    { name:'AES-GCM', length:256 },
+    false,
+    usage
+  );
+}
+async function encryptVaultDraft(draft, passphrase, existingVault=null) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveVaultKey(passphrase, salt, ['encrypt']);
+  const plaintext = encoder.encode(JSON.stringify({ schemaVersion: VAULT_SCHEMA_VERSION, ...draft }));
+  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, plaintext));
+  const now = new Date().toISOString();
+  return {
+    version: VAULT_SCHEMA_VERSION,
+    createdAt: existingVault?.createdAt || now,
+    updatedAt: now,
+    kdf: { name:'PBKDF2', hash:'SHA-256', iterations: VAULT_PBKDF2_ITERATIONS },
+    cipher: { name:'AES-GCM' },
+    salt: toBase64(salt),
+    iv: toBase64(iv),
+    encryptedPayload: toBase64(encrypted),
+  };
+}
+async function decryptVaultData(vault, passphrase) {
+  const salt = fromBase64(vault.salt);
+  const iv = fromBase64(vault.iv);
+  const payload = fromBase64(vault.encryptedPayload);
+  const key = await deriveVaultKey(passphrase, salt, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt({ name:'AES-GCM', iv }, key, payload);
+  const parsed = JSON.parse(decoder.decode(plaintext));
+  return {
+    overview: parsed.overview||'',
+    deviceLocations: parsed.deviceLocations||'',
+    recoverySteps: parsed.recoverySteps||'',
+    contacts: parsed.contacts||'',
+    warnings: parsed.warnings||'',
+    estateNotes: parsed.estateNotes||'',
+    notes: parsed.notes||'',
+  };
+}
+const vaultSectionDefs = [
+  { key:'overview', title:'Overview', placeholder:'Describe what this vault is for, what assets it covers, and the high-level intent.' },
+  { key:'deviceLocations', title:'Device Locations', placeholder:'List which devices, hardware wallets, backup drives, safes, or locations matter.' },
+  { key:'recoverySteps', title:'Recovery Steps', placeholder:'Provide step-by-step instructions in order. Keep this practical and explicit.' },
+  { key:'contacts', title:'Important Contacts', placeholder:'Estate attorney, executor, trusted family members, advisor, or other key contacts.' },
+  { key:'warnings', title:'Warnings / Do Not Do', placeholder:'Important cautions, irreversible mistakes to avoid, phishing warnings, etc.' },
+  { key:'estateNotes', title:'Estate / Inheritance Notes', placeholder:'Inheritance-specific instructions, sequencing, tax notes, or executor guidance.' },
+  { key:'notes', title:'Additional Notes', placeholder:'Anything else that does not fit the structured sections.' },
+];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const fmtBTC = v => parseFloat(v||0).toFixed(8);
@@ -565,6 +636,8 @@ const Icon = {
   ChevronLeft: (s)=><svg {...sz} {...s}><polyline points="15 18 9 12 15 6"/></svg>,
   ChevronRight: (s)=><svg {...sz} {...s}><polyline points="9 18 15 12 9 6"/></svg>,
   ChevronDown: (s)=><svg {...sz} {...s}><polyline points="6 9 12 15 18 9"/></svg>,
+  Lock: (s)=><svg {...sz} {...s}><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
+  Unlock: (s)=><svg {...sz} {...s}><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.5-2"/></svg>,
   Sun: (s)=><svg {...sz} {...s}><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>,
   Moon: (s)=><svg {...sz} {...s}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>,
 };
@@ -573,6 +646,7 @@ const NAV_ITEMS = [
   { key:'dashboard', label:'Dashboard', icon:'Home' },
   { key:'transactions', label:'Transactions', icon:'List' },
   { key:'wallets', label:'Wallets', icon:'Wallet' },
+  { key:'vault', label:'Vault', icon:'Lock' },
   { key:'export', label:'Export', icon:'Download' },
   { key:'settings', label:'Settings', icon:'Settings' },
 ];
@@ -859,6 +933,21 @@ function App() {
     try { if(localStorage.getItem('btc-reset')) return DEFAULT_WALLETS; const s=localStorage.getItem('btc-wallets'); return s ? JSON.parse(s) : DEFAULT_WALLETS; }
     catch { return DEFAULT_WALLETS; }
   });
+  const [vault, setVault] = useState(() => {
+    try { const s=localStorage.getItem(VAULT_STORAGE_KEY); return s ? JSON.parse(s) : null; }
+    catch { return null; }
+  });
+  const [vaultDraft, setVaultDraft] = useState(() => emptyVaultDraft());
+  const [vaultUnlocked, setVaultUnlocked] = useState(false);
+  const [vaultEmergencyMode, setVaultEmergencyMode] = useState(false);
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultError, setVaultError] = useState('');
+  const [vaultPassphraseInput, setVaultPassphraseInput] = useState('');
+  const [vaultSetupPassphrase, setVaultSetupPassphrase] = useState('');
+  const [vaultSetupConfirm, setVaultSetupConfirm] = useState('');
+  const [vaultNewPassphrase, setVaultNewPassphrase] = useState('');
+  const [vaultNewPassphraseConfirm, setVaultNewPassphraseConfirm] = useState('');
+  const vaultPassphraseRef = useRef('');
   const [theme, setTheme] = useState(() => localStorage.getItem('btc-theme')||'light');
   const [settings, setSettings] = useState(() => {
     try { const s=localStorage.getItem('btc-settings'); return s ? JSON.parse(s) : { defaultTxType:'Buy' }; }
@@ -876,7 +965,8 @@ function App() {
             const txs = JSON.parse(localStorage.getItem('btc-tx-v2')||'[]');
             const wals = JSON.parse(localStorage.getItem('btc-wallets')||'[]');
             const mod = localStorage.getItem('btc-last-modified')||new Date().toISOString();
-            await GDriveSync.push({ transactions: txs, wallets: wals, settings: next, lastModified: mod });
+            const storedVault = (() => { try { return JSON.parse(localStorage.getItem(VAULT_STORAGE_KEY)||'null'); } catch { return null; } })();
+            await GDriveSync.push({ transactions: txs, wallets: wals, settings: next, vault: storedVault, lastModified: mod });
             setSyncState('synced');
             setLastSync(new Date());
           } catch(e) {
@@ -943,12 +1033,25 @@ function App() {
   function emptyForm() {
     return { date: new Date().toISOString().split('T')[0], type:settings.defaultTxType||'Buy', wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
   }
+  const lockVault = React.useCallback(() => {
+    vaultPassphraseRef.current = '';
+    setVaultUnlocked(false);
+    setVaultEmergencyMode(false);
+    setVaultPassphraseInput('');
+    setVaultNewPassphrase('');
+    setVaultNewPassphraseConfirm('');
+    setVaultDraft(emptyVaultDraft());
+    setVaultError('');
+  }, []);
 
   // Persist — explicit saves only, no auto-write useEffects
-  const save = React.useCallback((txs, wals) => {
-    const mod = new Date().toISOString();
+  const save = React.useCallback((txs, wals, options={}) => {
+    const mod = options.mod || new Date().toISOString();
+    const vaultToStore = Object.prototype.hasOwnProperty.call(options, 'vault') ? options.vault : vault;
     localStorage.setItem('btc-tx-v2', JSON.stringify(txs));
     localStorage.setItem('btc-wallets', JSON.stringify(wals));
+    if(vaultToStore) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(vaultToStore));
+    else localStorage.removeItem(VAULT_STORAGE_KEY);
     localStorage.setItem('btc-last-modified', mod);
     // Auto-sync to Drive if connected
     if(GDriveSync.isSignedIn()) {
@@ -957,7 +1060,7 @@ function App() {
       syncDebounce.current = setTimeout(async () => {
         try {
           const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
-          await GDriveSync.push({ transactions: txs, wallets: wals, settings: settingsData, lastModified: mod });
+          await GDriveSync.push({ transactions: txs, wallets: wals, settings: settingsData, vault: vaultToStore, lastModified: mod });
           setSyncState('synced');
           setLastSync(new Date());
         } catch(e) {
@@ -966,7 +1069,7 @@ function App() {
         }
       }, 1500);
     }
-  }, []);
+  }, [vault]);
   useEffect(() => {
     localStorage.setItem('btc-theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
@@ -1069,17 +1172,24 @@ function App() {
       const remote = await GDriveSync.pull();
       const localTxCount = transactions.length;
       const remoteTxCount = remote?.transactions?.length || 0;
+      const localHasData = localTxCount > 0 || wallets.length > 0 || !!vault;
+      const remoteHasData = !!remote && (remoteTxCount > 0 || (remote?.wallets?.length||0) > 0 || !!remote?.vault);
 
-      if(remote && remote.transactions) {
+      if(remote && (Array.isArray(remote.transactions) || remote.vault)) {
         const localMod = localStorage.getItem('btc-last-modified') || '0';
         const remoteMod = remote.lastModified || '0';
-        const localIsEmpty = localTxCount === 0;
-        const remoteIsEmpty = remoteTxCount === 0;
+        const localIsEmpty = !localHasData;
+        const remoteIsEmpty = !remoteHasData;
 
         if(localIsEmpty && !remoteIsEmpty) {
           // Fresh device — always pull remote data down
-          setTransactions(remote.transactions);
+          setTransactions(Array.isArray(remote.transactions) ? remote.transactions : []);
           setWallets(remote.wallets || []);
+          if(Object.prototype.hasOwnProperty.call(remote, 'vault')) {
+            setVault(remote.vault || null);
+            if(remote.vault) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(remote.vault));
+            else localStorage.removeItem(VAULT_STORAGE_KEY);
+          }
           if(remote.settings) { setSettings(remote.settings); localStorage.setItem('btc-settings', JSON.stringify(remote.settings)); }
           localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
           localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
@@ -1089,13 +1199,18 @@ function App() {
           // Remote is empty, local has data — push up
           const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
           const mod = new Date().toISOString();
-          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+          await GDriveSync.push({ transactions, wallets, settings: settingsData, vault, lastModified: mod });
           localStorage.setItem('btc-last-modified', mod);
           showToast('Backed up to Google Drive');
         } else if(remoteTxCount > localTxCount || remoteMod > localMod) {
           // Remote has more data or is newer — pull
-          setTransactions(remote.transactions);
+          setTransactions(Array.isArray(remote.transactions) ? remote.transactions : []);
           setWallets(remote.wallets || []);
+          if(Object.prototype.hasOwnProperty.call(remote, 'vault')) {
+            setVault(remote.vault || null);
+            if(remote.vault) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(remote.vault));
+            else localStorage.removeItem(VAULT_STORAGE_KEY);
+          }
           if(remote.settings) { setSettings(remote.settings); localStorage.setItem('btc-settings', JSON.stringify(remote.settings)); }
           localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
           localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets || []));
@@ -1105,15 +1220,15 @@ function App() {
           // Local has more data or same — sync up
           const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
           const mod = new Date().toISOString();
-          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+          await GDriveSync.push({ transactions, wallets, settings: settingsData, vault, lastModified: mod });
           localStorage.setItem('btc-last-modified', mod);
           showToast(localTxCount === remoteTxCount ? 'Connected — everything is up to date' : `Synced to Google Drive — ${localTxCount} transactions`);
         }
-      } else if(localTxCount > 0) {
+      } else if(localHasData) {
         // No remote file at all, push local data
         const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
         const mod = new Date().toISOString();
-        await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+        await GDriveSync.push({ transactions, wallets, settings: settingsData, vault, lastModified: mod });
         localStorage.setItem('btc-last-modified', mod);
         showToast('Backed up to Google Drive');
       } else {
@@ -1127,17 +1242,18 @@ function App() {
       localStorage.removeItem('btc-sync-enabled');
       showToast('Sign-in failed');
     }
-  }, [transactions, wallets]);
+  }, [transactions, wallets, vault]);
 
   const handleSignOut = useCallback(() => {
     GDriveSync.signOut();
+    lockVault();
     setSyncState('disconnected');
     setSyncUser(null);
     setLastSync(null);
     localStorage.removeItem('btc-sync-enabled');
     localStorage.removeItem('btc-sync-user');
     showToast('Disconnected from Google Drive');
-  }, []);
+  }, [lockVault]);
 
   // Auto-reconnect on mount if previously signed in
   useEffect(() => {
@@ -1157,9 +1273,14 @@ function App() {
             const remote = await GDriveSync.pull();
             if(remote && remote.lastModified) {
               const localMod = localStorage.getItem('btc-last-modified') || '0';
-              if(remote.lastModified > localMod) {
-                setTransactions(remote.transactions);
+                if(remote.lastModified > localMod) {
+                setTransactions(Array.isArray(remote.transactions) ? remote.transactions : []);
                 setWallets(remote.wallets || []);
+                if(Object.prototype.hasOwnProperty.call(remote, 'vault')) {
+                  setVault(remote.vault || null);
+                  if(remote.vault) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(remote.vault));
+                  else localStorage.removeItem(VAULT_STORAGE_KEY);
+                }
                 if(remote.settings) {
                   setSettings(remote.settings);
                   localStorage.setItem('btc-settings', JSON.stringify(remote.settings));
@@ -1188,6 +1309,107 @@ function App() {
     setToast(msg);
     toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, dur);
   }
+
+  const handleCreateVault = async () => {
+    setVaultError('');
+    if(!hasVaultContent(vaultDraft)) { setVaultError('Add at least one vault section before saving.'); return; }
+    if(!vaultSetupPassphrase || vaultSetupPassphrase.length < 10) { setVaultError('Use a vault passphrase with at least 10 characters.'); return; }
+    if(vaultSetupPassphrase !== vaultSetupConfirm) { setVaultError('Vault passphrases do not match.'); return; }
+    setVaultBusy(true);
+    try {
+      const encryptedVault = await encryptVaultDraft(vaultDraft, vaultSetupPassphrase);
+      setVault(encryptedVault);
+      vaultPassphraseRef.current = vaultSetupPassphrase;
+      setVaultUnlocked(true);
+      setVaultSetupPassphrase('');
+      setVaultSetupConfirm('');
+      save(transactions, wallets, { vault: encryptedVault });
+      showToast('Vault created and encrypted');
+    } catch(e) {
+      console.error('Vault create failed:', e);
+      setVaultError('Could not create the vault.');
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleUnlockVault = async (emergency=false) => {
+    if(!vault) return;
+    setVaultError('');
+    if(!vaultPassphraseInput) { setVaultError('Enter your vault passphrase to continue.'); return; }
+    setVaultBusy(true);
+    try {
+      const decrypted = await decryptVaultData(vault, vaultPassphraseInput);
+      vaultPassphraseRef.current = vaultPassphraseInput;
+      setVaultDraft(decrypted);
+      setVaultUnlocked(true);
+      setVaultEmergencyMode(emergency);
+      setVaultPassphraseInput('');
+      showToast(emergency ? 'Emergency mode unlocked' : 'Vault unlocked');
+    } catch(e) {
+      console.error('Vault unlock failed:', e);
+      setVaultError('Incorrect passphrase or corrupted vault data.');
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleSaveVault = async () => {
+    setVaultError('');
+    if(!vaultUnlocked || !vaultPassphraseRef.current) { setVaultError('Unlock the vault before saving.'); return; }
+    if(!hasVaultContent(vaultDraft)) { setVaultError('Add at least one vault section before saving.'); return; }
+    setVaultBusy(true);
+    try {
+      const encryptedVault = await encryptVaultDraft(vaultDraft, vaultPassphraseRef.current, vault);
+      setVault(encryptedVault);
+      save(transactions, wallets, { vault: encryptedVault });
+      showToast('Vault saved');
+    } catch(e) {
+      console.error('Vault save failed:', e);
+      setVaultError('Could not save the vault.');
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleChangeVaultPassphrase = async () => {
+    setVaultError('');
+    if(!vaultUnlocked || !vaultPassphraseRef.current) { setVaultError('Unlock the vault before changing the passphrase.'); return; }
+    if(!vaultNewPassphrase || vaultNewPassphrase.length < 10) { setVaultError('Use a new passphrase with at least 10 characters.'); return; }
+    if(vaultNewPassphrase !== vaultNewPassphraseConfirm) { setVaultError('New vault passphrases do not match.'); return; }
+    setVaultBusy(true);
+    try {
+      const encryptedVault = await encryptVaultDraft(vaultDraft, vaultNewPassphrase, vault);
+      setVault(encryptedVault);
+      vaultPassphraseRef.current = vaultNewPassphrase;
+      setVaultNewPassphrase('');
+      setVaultNewPassphraseConfirm('');
+      save(transactions, wallets, { vault: encryptedVault });
+      showToast('Vault passphrase updated');
+    } catch(e) {
+      console.error('Vault passphrase update failed:', e);
+      setVaultError('Could not change the vault passphrase.');
+    } finally {
+      setVaultBusy(false);
+    }
+  };
+
+  const handleDeleteVault = () => {
+    setConfirmDialog({
+      title: 'Delete Vault',
+      message: 'Delete the encrypted vault permanently? This removes your inheritance instructions from local storage and Google Drive sync.',
+      confirmLabel: 'Delete Vault',
+      danger: true,
+      onConfirm: () => {
+        setVault(null);
+        localStorage.removeItem(VAULT_STORAGE_KEY);
+        lockVault();
+        save(transactions, wallets, { vault: null });
+        setConfirmDialog(null);
+        showToast('Vault deleted');
+      },
+    });
+  };
 
   // ─── Wallet holdings ─────────────────────────────────────────────────────
   const walletHoldings = useMemo(() => {
@@ -1367,24 +1589,59 @@ function App() {
     showToast(`Exported ${rows.length} transactions`);
   };
 
-  // ─── Export Native CSV (tracker backup) ──────────────────────────────────
+  // ─── Export Full Backup JSON ──────────────────────────────────────────────
   const exportNativeCSV = () => {
-    const headers = ['date','type','wallet','wallet2','amount','price','fee','totalUsd','notes','txhash','excludeStats'];
-    const rows = transactions.slice().sort((a,b)=>a.date.localeCompare(b.date))
-      .map(tx => headers.map(h => tx[h]||''));
-    const csv = [headers, ...rows].map(r => r.map(f => '"' + String(f).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const payload = {
+      version: '3.24',
+      exportedAt: new Date().toISOString(),
+      transactions,
+      wallets,
+      settings,
+      vault,
+      lastModified: localStorage.getItem('btc-last-modified')||new Date().toISOString(),
+    };
     const a = document.createElement('a');
-    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-    a.download = `btc-tracker-backup-${new Date().toISOString().split('T')[0]}.csv`;
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)], { type:'application/json' }));
+    a.download = `btc-tracker-backup-${new Date().toISOString().split('T')[0]}.json`;
     a.click();
   };
 
-  // ─── Import CSV ───────────────────────────────────────────────────────────
+  // ─── Import Backup / CSV ──────────────────────────────────────────────────
   const importCSV = (e) => {
     const file=e.target.files[0]; if(!file) return;
     const reader=new FileReader();
     reader.onload = ev => {
-      const lines=ev.target.result.split('\n');
+      const raw = ev.target.result;
+      const trimmed = raw.trim();
+      if(file.name.toLowerCase().endsWith('.json') || trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if(Array.isArray(parsed.transactions) || parsed.vault || Array.isArray(parsed.wallets) || parsed.settings) {
+            const importedTransactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
+            const importedWallets = Array.isArray(parsed.wallets) ? parsed.wallets : [];
+            setTransactions(importedTransactions);
+            setWallets(importedWallets);
+            if(parsed.settings) {
+              setSettings(parsed.settings);
+              localStorage.setItem('btc-settings', JSON.stringify(parsed.settings));
+            }
+            const importedVault = parsed.vault || null;
+            setVault(importedVault);
+            if(importedVault) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(importedVault));
+            else localStorage.removeItem(VAULT_STORAGE_KEY);
+            lockVault();
+            save(importedTransactions, importedWallets, { vault: importedVault, mod: parsed.lastModified || new Date().toISOString() });
+            showToast('Backup restored');
+          } else {
+            showToast('Backup file does not contain tracker data');
+          }
+        } catch {
+          showToast('Could not import backup file');
+        }
+        e.target.value='';
+        return;
+      }
+      const lines=raw.split('\n');
       const hdr=lines[0].toLowerCase();
       const isCL=hdr.includes('asset sent')||hdr.includes('asset received');
       // Parse CSV line respecting quoted fields
@@ -1519,7 +1776,7 @@ function App() {
           </button>
           <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
         </div>
-        <div className="sidebar-version">v3.24</div>
+        <div className="sidebar-version">v3.25</div>
       </nav>
 
       <div className="app-body">
@@ -1539,7 +1796,7 @@ function App() {
             </button>
             <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
           </div>
-          <div className="sidebar-version">v3.24</div>
+          <div className="sidebar-version">v3.25</div>
         </aside>
 
         <main className="main">
@@ -1826,6 +2083,173 @@ function App() {
           </>
         )}
 
+        {/* ── VAULT ── */}
+        {tab==='vault' && (
+          <>
+            <div className="card">
+              <div className="card-header">
+                <div>
+                  <div className="card-title" style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
+                    {Icon.Lock({width:16,height:16})} Inheritance Vault
+                  </div>
+                  <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginTop:'.25rem'}}>
+                    Encrypted inheritance instructions. Stored locally and in Google Drive sync only as ciphertext.
+                  </div>
+                </div>
+                {vault && (
+                  <div className="sync-pill" style={{cursor:'default'}}>
+                    <div className={`sync-dot ${vaultUnlocked?'connected':'disconnected'}`}/>
+                    {vaultUnlocked ? 'Unlocked in session' : 'Locked'}
+                  </div>
+                )}
+              </div>
+              <div className="card-body">
+                {!vault && (
+                  <>
+                    <div className="info-banner" style={{marginBottom:'1rem'}}>
+                      <span style={{display:'flex',color:'var(--bitcoin-orange)'}}>{Icon.Warning({width:16,height:16})}</span>
+                      <div>
+                        This vault is protected by a separate passphrase. If the passphrase is forgotten, the app cannot recover the contents.
+                      </div>
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:'1rem',marginBottom:'1.25rem'}}>
+                      <div className="form-group">
+                        <label className="form-label">Vault Passphrase</label>
+                        <input type="password" className="form-input" value={vaultSetupPassphrase} onChange={e=>setVaultSetupPassphrase(e.target.value)} placeholder="Use a separate, memorable passphrase"/>
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Confirm Passphrase</label>
+                        <input type="password" className="form-input" value={vaultSetupConfirm} onChange={e=>setVaultSetupConfirm(e.target.value)} placeholder="Re-enter the passphrase"/>
+                      </div>
+                    </div>
+                    {vaultSectionDefs.map(section => (
+                      <div key={section.key} className="form-group" style={{marginBottom:'1rem'}}>
+                        <label className="form-label">{section.title}</label>
+                        <textarea
+                          className="form-input"
+                          rows={section.key==='recoverySteps' ? 6 : 4}
+                          placeholder={section.placeholder}
+                          value={vaultDraft[section.key]}
+                          onChange={e=>setVaultDraft(prev => ({...prev, [section.key]: e.target.value}))}
+                          style={{width:'100%',resize:'vertical',minHeight:section.key==='recoverySteps'?140:110,lineHeight:1.6}}
+                        />
+                      </div>
+                    ))}
+                    {vaultError && <div style={{color:'var(--red)',fontSize:'.8125rem',fontWeight:600,marginBottom:'1rem'}}>{vaultError}</div>}
+                    <button className="btn btn-primary" onClick={handleCreateVault} disabled={vaultBusy}>
+                      {vaultBusy ? 'Encrypting…' : 'Create Encrypted Vault'}
+                    </button>
+                  </>
+                )}
+
+                {vault && !vaultUnlocked && (
+                  <div style={{maxWidth:560}}>
+                    <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.375rem'}}>Vault locked</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',lineHeight:1.7,marginBottom:'1rem'}}>
+                      Family members can access this site on your devices, but they still need the vault passphrase to read the recovery instructions.
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr auto auto',gap:'.75rem',alignItems:'end',marginBottom:'1rem'}}>
+                      <div className="form-group" style={{marginBottom:0}}>
+                        <label className="form-label">Vault Passphrase</label>
+                        <input type="password" className="form-input" value={vaultPassphraseInput} onChange={e=>setVaultPassphraseInput(e.target.value)} placeholder="Enter vault passphrase"/>
+                      </div>
+                      <button className="btn btn-primary" onClick={()=>handleUnlockVault(false)} disabled={vaultBusy}>
+                        {vaultBusy ? 'Unlocking…' : 'Unlock Vault'}
+                      </button>
+                      <button className="btn btn-secondary" onClick={()=>handleUnlockVault(true)} disabled={vaultBusy}>
+                        Emergency Mode
+                      </button>
+                    </div>
+                    <div style={{fontSize:'.75rem',color:'var(--text-tertiary)'}}>
+                      Created {vault.createdAt ? new Date(vault.createdAt).toLocaleString() : '—'} · Updated {vault.updatedAt ? new Date(vault.updatedAt).toLocaleString() : '—'}
+                    </div>
+                    {vaultError && <div style={{color:'var(--red)',fontSize:'.8125rem',fontWeight:600,marginTop:'1rem'}}>{vaultError}</div>}
+                  </div>
+                )}
+
+                {vault && vaultUnlocked && !vaultEmergencyMode && (
+                  <>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'1rem',flexWrap:'wrap',marginBottom:'1rem'}}>
+                      <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>
+                        Unlocked only for this session. Reload or use Lock Vault to clear decrypted contents from memory.
+                      </div>
+                      <div style={{display:'flex',gap:'.5rem',flexWrap:'wrap'}}>
+                        <button className="btn btn-secondary btn-sm" onClick={()=>setVaultEmergencyMode(true)}>Emergency Read View</button>
+                        <button className="btn btn-secondary btn-sm" onClick={lockVault}>{Icon.Lock({width:12,height:12})} Lock Vault</button>
+                      </div>
+                    </div>
+                    {vaultSectionDefs.map(section => (
+                      <div key={section.key} className="form-group" style={{marginBottom:'1rem'}}>
+                        <label className="form-label">{section.title}</label>
+                        <textarea
+                          className="form-input"
+                          rows={section.key==='recoverySteps' ? 6 : 4}
+                          placeholder={section.placeholder}
+                          value={vaultDraft[section.key]}
+                          onChange={e=>setVaultDraft(prev => ({...prev, [section.key]: e.target.value}))}
+                          style={{width:'100%',resize:'vertical',minHeight:section.key==='recoverySteps'?140:110,lineHeight:1.6}}
+                        />
+                      </div>
+                    ))}
+                    <div className="card" style={{marginTop:'1.25rem',marginBottom:'1rem',borderStyle:'dashed'}}>
+                      <div className="card-header"><div className="card-title">Change Vault Passphrase</div></div>
+                      <div className="card-body" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'1rem'}}>
+                        <div className="form-group" style={{marginBottom:0}}>
+                          <label className="form-label">New Passphrase</label>
+                          <input type="password" className="form-input" value={vaultNewPassphrase} onChange={e=>setVaultNewPassphrase(e.target.value)} placeholder="New passphrase"/>
+                        </div>
+                        <div className="form-group" style={{marginBottom:0}}>
+                          <label className="form-label">Confirm New Passphrase</label>
+                          <input type="password" className="form-input" value={vaultNewPassphraseConfirm} onChange={e=>setVaultNewPassphraseConfirm(e.target.value)} placeholder="Re-enter new passphrase"/>
+                        </div>
+                      </div>
+                      <div className="modal-footer" style={{borderTop:'1px solid var(--border-color)'}}>
+                        <button className="btn btn-secondary" onClick={handleChangeVaultPassphrase} disabled={vaultBusy}>Change Passphrase</button>
+                      </div>
+                    </div>
+                    {vaultError && <div style={{color:'var(--red)',fontSize:'.8125rem',fontWeight:600,marginBottom:'1rem'}}>{vaultError}</div>}
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'1rem',flexWrap:'wrap'}}>
+                      <button className="btn btn-primary" onClick={handleSaveVault} disabled={vaultBusy}>
+                        {vaultBusy ? 'Saving…' : 'Save Encrypted Vault'}
+                      </button>
+                      <button className="btn btn-danger" onClick={handleDeleteVault}>
+                        {Icon.Trash({width:13,height:13})} Delete Vault
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {vault && vaultUnlocked && vaultEmergencyMode && (
+                  <>
+                    <div style={{background:'rgba(217,119,6,.08)',border:'1px solid #d97706',borderRadius:12,padding:'1rem 1.25rem',marginBottom:'1rem',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'1rem',flexWrap:'wrap'}}>
+                      <div>
+                        <div style={{fontWeight:700,color:'#d97706',marginBottom:'.25rem'}}>Emergency Mode</div>
+                        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',lineHeight:1.7}}>
+                          Read-only inheritance view. Use this when someone needs the instructions without editing them.
+                        </div>
+                      </div>
+                      <div style={{display:'flex',gap:'.5rem',flexWrap:'wrap'}}>
+                        <button className="btn btn-secondary btn-sm" onClick={()=>setVaultEmergencyMode(false)}>Back to Edit View</button>
+                        <button className="btn btn-secondary btn-sm" onClick={lockVault}>{Icon.Lock({width:12,height:12})} Lock Vault</button>
+                      </div>
+                    </div>
+                    {vaultSectionDefs.filter(section => String(vaultDraft[section.key]||'').trim()).map(section => (
+                      <div key={section.key} className="card" style={section.key==='warnings'?{borderColor:'#d97706'}:{}}>
+                        <div className="card-header">
+                          <div className="card-title" style={section.key==='warnings'?{color:'#d97706'}:{}}>{section.title}</div>
+                        </div>
+                        <div className="card-body" style={{whiteSpace:'pre-wrap',lineHeight:1.8,fontSize:'.9375rem'}}>
+                          {vaultDraft[section.key]}
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+
         {/* ── EXPORT ── */}
         {tab==='export' && (
           <>
@@ -1839,11 +2263,11 @@ function App() {
                   <div style={{flex:1,minWidth:200}}>
                     <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem'}}>Download Tracker Backup</div>
                     <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',lineHeight:1.6}}>
-                      Export all {transactions.length} transactions in native format. Use this file to restore your data via Settings → Import.
+                      Export a full encrypted backup including transactions, wallets, settings, and your encrypted vault. Use this file to restore everything via Settings → Import.
                     </div>
                   </div>
                   <button className="btn btn-primary" onClick={exportNativeCSV} style={{display:'inline-flex',alignItems:'center',gap:'.5rem'}}>
-                    {Icon.Download({width:14,height:14})} Download Backup
+                    {Icon.Download({width:14,height:14})} Download Full Backup
                   </button>
                 </div>
               </div>
@@ -1940,7 +2364,7 @@ function App() {
                       </div>
                       <div>
                         <div style={{fontSize:'.9375rem',fontWeight:600}}>Sync with Google Drive</div>
-                        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Sign in to automatically back up and sync your data across devices. Your data is stored privately in your Google Drive.</div>
+                        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Sign in to automatically back up and sync your data across devices. Vault contents are synced only as encrypted ciphertext.</div>
                       </div>
                     </div>
                     <button className="btn btn-primary" onClick={handleSignIn} style={{display:'inline-flex',alignItems:'center',gap:'.5rem'}}>
@@ -1965,7 +2389,7 @@ function App() {
                         try {
                           const settingsData = JSON.parse(localStorage.getItem('btc-settings')||'{}');
                           const mod = new Date().toISOString();
-                          await GDriveSync.push({ transactions, wallets, settings: settingsData, lastModified: mod });
+                          await GDriveSync.push({ transactions, wallets, settings: settingsData, vault, lastModified: mod });
                           localStorage.setItem('btc-last-modified', mod);
                           setSyncState('synced'); setLastSync(new Date()); showToast('Pushed to Google Drive');
                         } catch { setSyncState('error'); showToast('Push failed'); }
@@ -1976,9 +2400,15 @@ function App() {
                         setSyncState('syncing');
                         try {
                           const remote = await GDriveSync.pull();
-                          if(remote && remote.transactions) {
-                            setTransactions(remote.transactions);
+                          if(remote && (Array.isArray(remote.transactions) || remote.vault)) {
+                            setTransactions(Array.isArray(remote.transactions) ? remote.transactions : []);
                             setWallets(remote.wallets||[]);
+                            if(Object.prototype.hasOwnProperty.call(remote, 'vault')) {
+                              setVault(remote.vault || null);
+                              if(remote.vault) localStorage.setItem(VAULT_STORAGE_KEY, JSON.stringify(remote.vault));
+                              else localStorage.removeItem(VAULT_STORAGE_KEY);
+                              lockVault();
+                            }
                             if(remote.settings) { setSettings(remote.settings); localStorage.setItem('btc-settings', JSON.stringify(remote.settings)); }
                             localStorage.setItem('btc-tx-v2', JSON.stringify(remote.transactions));
                             localStorage.setItem('btc-wallets', JSON.stringify(remote.wallets||[]));
@@ -2027,13 +2457,13 @@ function App() {
 
                 {/* Import CSV */}
                 <div style={{marginBottom:'1.5rem'}}>
-                  <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem'}}>Import Transactions</div>
+                  <div style={{fontSize:'.9375rem',fontWeight:600,marginBottom:'.25rem'}}>Import Backup or Transactions</div>
                   <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'.75rem'}}>
-                    Import a <strong>Tracker Backup CSV</strong> (from the Export tab) to restore your data. CoinLedger-format files are also supported. Transactions are appended to existing data.
+                    Import a <strong>full backup JSON</strong> to restore transactions, wallets, settings, and the encrypted vault. Legacy Tracker CSV and CoinLedger CSV files are still supported for transaction import.
                   </div>
                   <label className="btn btn-secondary" style={{cursor:'pointer',display:'inline-flex',alignItems:'center',gap:'.375rem'}}>
-                    {Icon.Upload({width:13,height:13})} Import CSV
-                    <input type="file" accept=".csv" onChange={importCSV} style={{display:'none'}}/>
+                    {Icon.Upload({width:13,height:13})} Import File
+                    <input type="file" accept=".csv,.json" onChange={importCSV} style={{display:'none'}}/>
                   </label>
                 </div>
 
@@ -2234,17 +2664,21 @@ function App() {
       {showResetDialog && <ResetDialog
         transactions={transactions}
         wallets={wallets}
+        hasVault={!!vault}
         onClose={()=>setShowResetDialog(false)}
         onReset={(keepWallets) => {
           localStorage.removeItem('btc-tx-v2');
           if(!keepWallets) {
             localStorage.removeItem('btc-wallets');
+            localStorage.removeItem(VAULT_STORAGE_KEY);
             setWallets([...DEFAULT_WALLETS]);
+            setVault(null);
+            lockVault();
           }
           setTransactions(PRELOADED_TRANSACTIONS);
-          if(keepWallets) save(PRELOADED_TRANSACTIONS, wallets);
+          save(PRELOADED_TRANSACTIONS, keepWallets ? wallets : DEFAULT_WALLETS, { vault: keepWallets ? vault : null });
           setShowResetDialog(false);
-          showToast(keepWallets ? 'Transactions cleared — wallets kept' : 'All data reset');
+          showToast(keepWallets ? 'Transactions cleared — wallets and vault kept' : 'All data reset');
         }}
       />}
 
@@ -2278,7 +2712,7 @@ function App() {
   );
 }
 
-function ResetDialog({ transactions, wallets, onClose, onReset }) {
+function ResetDialog({ transactions, wallets, hasVault, onClose, onReset }) {
   const [keepWallets, setKeepWallets] = React.useState(true);
   const [confirmText, setConfirmText] = React.useState('');
   const canConfirm = confirmText.toLowerCase() === 'reset';
@@ -2296,6 +2730,11 @@ function ResetDialog({ transactions, wallets, onClose, onReset }) {
         </div>
 
         <div className="modal-body" style={{padding:'1.5rem'}}>
+          {hasVault && (
+            <div style={{fontSize:'.8125rem',color:'#d97706',fontWeight:600,marginBottom:'1rem'}}>
+              A full reset will also remove your encrypted vault.
+            </div>
+          )}
           {/* What will be deleted */}
           <div style={{marginBottom:'1.25rem'}}>
             <div style={{fontSize:'.8125rem',fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:'.75rem'}}>This will permanently delete</div>
