@@ -1147,7 +1147,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const oStep = hasOverlay ? niceStep(oRange, 4) : 1;
   const oTickStart = hasOverlay ? Math.ceil(oMin / oStep) * oStep : 0;
   const oTicks = [];
-  if(hasOverlay) { for(let v=oTickStart; v<=oMax+oStep*0.01; v+=oStep) oTicks.push(+v.toPrecision(10)); }
+  if(hasOverlay) { for(let v=oTickStart; v<=oMax+oStep*0.01 && oTicks.length<12; v+=oStep) oTicks.push(+v.toPrecision(10)); }
 
   const pathD = !isBar ? data.map((d,i)=>`${i===0?'M':'L'}${xScale(i).toFixed(1)},${yScale(d[dataKey]).toFixed(1)}`).join(' ') : '';
   const areaD = !isBar ? pathD+` L${xScale(data.length-1).toFixed(1)},${(PT+iH).toFixed(1)} L${xScale(0).toFixed(1)},${(PT+iH).toFixed(1)} Z` : '';
@@ -1158,7 +1158,9 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
 
   // Y axis ticks — snap to nice round numbers
   const niceStep = (range, count) => {
+    if(!range || !isFinite(range) || range<=0) return 1;
     const rough = range / count;
+    if(!rough || !isFinite(rough) || rough<=0) return 1;
     const mag = Math.pow(10, Math.floor(Math.log10(rough)));
     const norm = rough / mag;
     const nice = norm<=1.5?1:norm<=3?2:norm<=7?5:10;
@@ -1167,7 +1169,8 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const yStep = niceStep(yRange, 4);
   const yTickStart = Math.ceil(yMin / yStep) * yStep;
   const yTicks = [];
-  for(let v=yTickStart; v<=yMax+yStep*0.01; v+=yStep) yTicks.push(+v.toPrecision(10));
+  for(let v=yTickStart; v<=yMax+yStep*0.01 && yTicks.length<12; v+=yStep) yTicks.push(+v.toPrecision(10));
+  if(!yTicks.length) yTicks.push(yMin, yMax);
   // X axis ticks
   const xTickIdxs = [0, 0, data.length-1];
   const midT = tMin + tRange/2;
@@ -1224,11 +1227,11 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const eyStep = niceStep(yRange, 8);
   const eyTickStart = Math.ceil(yMin / eyStep) * eyStep;
   const eyTicks = [];
-  for(let v=eyTickStart; v<=yMax+eyStep*0.01; v+=eyStep) eyTicks.push(+v.toPrecision(10));
+  for(let v=eyTickStart; v<=yMax+eyStep*0.01 && eyTicks.length<16; v+=eyStep) eyTicks.push(+v.toPrecision(10));
   const eoStep = hasOverlay ? niceStep(oRange, 8) : 1;
   const eoTickStart = hasOverlay ? Math.ceil(oMin / eoStep) * eoStep : 0;
   const eoTicks = [];
-  if(hasOverlay) { for(let v=eoTickStart; v<=oMax+eoStep*0.01; v+=eoStep) eoTicks.push(+v.toPrecision(10)); }
+  if(hasOverlay) { for(let v=eoTickStart; v<=oMax+eoStep*0.01 && eoTicks.length<16; v+=eoStep) eoTicks.push(+v.toPrecision(10)); }
   // More X ticks for expanded
   const eXTickCount = 5;
   const eXTickIdxs = [];
