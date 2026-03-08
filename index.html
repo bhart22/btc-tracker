@@ -990,8 +990,15 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         title="Realized vs Unrealized P&L"
         subtitle={(plChartData[plChartData.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(plChartData[plChartData.length-1]?.totalPL||0)+' total P&L'}
         color={plChartData[plChartData.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
-        formatY={fmtCompactUSD}
-        formatTooltip={v => (v>=0?'+':'')+fmtCompactUSD(v)}
+        formatY={v => {
+          const sign = v>0?'+':v<0?'-':'';
+          const abs = Math.abs(v);
+          if(abs>=1000000) return sign+'$'+(abs/1000000).toFixed(1).replace(/\.0$/,'')+'M';
+          if(abs>=1000) return sign+'$'+Math.round(abs/1000)+'k';
+          if(abs>=1) return sign+'$'+Math.round(abs);
+          return '$0';
+        }}
+        formatTooltip={v => (v>=0?'+':'-')+'$'+Math.round(Math.abs(v)).toLocaleString()}
         refLine={0}
         refLineColor="var(--text-tertiary)"
         refLineLabel="Break even"
@@ -1118,8 +1125,8 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const maxV=Math.max(...vals);
 
   // include refLine in Y scale if present
-  const yMin = refLine ? Math.min(minV, refLine*0.97) : minV;
-  const yMax = refLine ? Math.max(maxV, refLine*1.03) : maxV;
+  const yMin = refLine!=null ? Math.min(minV, refLine-(Math.abs(refLine)*0.03||maxV*0.03)) : minV;
+  const yMax = refLine!=null ? Math.max(maxV, refLine+(Math.abs(refLine)*0.03||maxV*0.03)) : maxV;
   const yRange = yMax-yMin || 1;
 
   // Time-based X scale
@@ -1137,7 +1144,10 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const oRange = oMax-oMin || 1;
   const oXScale = i => hasOverlay ? PL + ((oTimestamps[i]-tMin)/tRange)*iW : 0;
   const oYScale = v => PT + iH - ((v-oMin)/oRange)*iH;
-  const oTicks = hasOverlay ? [0,.25,.5,.75,1].map(t=>oMin+t*oRange) : [];
+  const oStep = hasOverlay ? niceStep(oRange, 4) : 1;
+  const oTickStart = hasOverlay ? Math.ceil(oMin / oStep) * oStep : 0;
+  const oTicks = [];
+  if(hasOverlay) { for(let v=oTickStart; v<=oMax+oStep*0.01; v+=oStep) oTicks.push(+v.toPrecision(10)); }
 
   const pathD = !isBar ? data.map((d,i)=>`${i===0?'M':'L'}${xScale(i).toFixed(1)},${yScale(d[dataKey]).toFixed(1)}`).join(' ') : '';
   const areaD = !isBar ? pathD+` L${xScale(data.length-1).toFixed(1)},${(PT+iH).toFixed(1)} L${xScale(0).toFixed(1)},${(PT+iH).toFixed(1)} Z` : '';
@@ -1146,8 +1156,18 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   // Bar dimensions
   const barW = isBar && data.length > 1 ? Math.max(2, Math.min(16, (iW / data.length) * 0.7)) : 12;
 
-  // Y axis ticks
-  const yTicks = [0,.25,.5,.75,1].map(t=>yMin+t*yRange);
+  // Y axis ticks — snap to nice round numbers
+  const niceStep = (range, count) => {
+    const rough = range / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    const nice = norm<=1.5?1:norm<=3?2:norm<=7?5:10;
+    return nice * mag;
+  };
+  const yStep = niceStep(yRange, 4);
+  const yTickStart = Math.ceil(yMin / yStep) * yStep;
+  const yTicks = [];
+  for(let v=yTickStart; v<=yMax+yStep*0.01; v+=yStep) yTicks.push(+v.toPrecision(10));
   // X axis ticks
   const xTickIdxs = [0, 0, data.length-1];
   const midT = tMin + tRange/2;
@@ -1201,8 +1221,14 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const eAreaD = !isBar ? ePathD+` L${exScale(data.length-1).toFixed(1)},${(EPT+eIH).toFixed(1)} L${exScale(0).toFixed(1)},${(EPT+eIH).toFixed(1)} Z` : '';
   const eoPathD = hasOverlay ? overlay.data.map((d,i)=>`${i===0?'M':'L'}${eoXScale(i).toFixed(1)},${eoYScale(d[overlay.dataKey]).toFixed(1)}`).join(' ') : '';
   const eGradId = 'egrad_'+dataKey.replace(/[^a-z]/g,'');
-  const eyTicks = [0,.125,.25,.375,.5,.625,.75,.875,1].map(t=>yMin+t*yRange);
-  const eoTicks = hasOverlay ? [0,.125,.25,.375,.5,.625,.75,.875,1].map(t=>oMin+t*oRange) : [];
+  const eyStep = niceStep(yRange, 8);
+  const eyTickStart = Math.ceil(yMin / eyStep) * eyStep;
+  const eyTicks = [];
+  for(let v=eyTickStart; v<=yMax+eyStep*0.01; v+=eyStep) eyTicks.push(+v.toPrecision(10));
+  const eoStep = hasOverlay ? niceStep(oRange, 8) : 1;
+  const eoTickStart = hasOverlay ? Math.ceil(oMin / eoStep) * eoStep : 0;
+  const eoTicks = [];
+  if(hasOverlay) { for(let v=eoTickStart; v<=oMax+eoStep*0.01; v+=eoStep) eoTicks.push(+v.toPrecision(10)); }
   // More X ticks for expanded
   const eXTickCount = 5;
   const eXTickIdxs = [];
