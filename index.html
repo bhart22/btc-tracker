@@ -952,7 +952,41 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     return result.filter(d => d.date >= cutoff);
   }, [historicalPrices, settings.chartRange, settings.chartRangeCustom]);
 
-  if(!chartData.length) return null;
+  // Sample data for empty state
+  const isSample = !chartData.length;
+  const sampleChartData = React.useMemo(() => {
+    if(!isSample) return {};
+    const today = new Date();
+    const pts = [], dcaPts = [], feePts = [], rewardPts = [], plPts = [], monthlyPts = [], holdPts = [];
+    let btc = 0, cost = 0, fees = 0, rewards = 0, realized = 0;
+    for(let i = 24; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 15);
+      const date = d.toISOString().slice(0,10);
+      const month = date.slice(0,7);
+      const price = 30000 + Math.sin(i*0.3)*15000 + i*800;
+      const buyAmt = 0.01 + Math.random()*0.04;
+      const buyUsd = +(buyAmt * price).toFixed(2);
+      btc += buyAmt;
+      cost += buyUsd;
+      const fee = +(Math.random()*0.00005).toFixed(8);
+      fees += fee;
+      if(i % 4 === 0) { const r = +(0.0001+Math.random()*0.0003).toFixed(8); rewards += r; btc += r; }
+      if(i === 8) { const sellAmt = 0.05; const sellUsd = +(sellAmt*price).toFixed(2); const avgCost = cost/btc; realized += sellUsd - sellAmt*avgCost; cost -= avgCost*sellAmt; btc -= sellAmt; }
+      const avgCost = btc > 0 ? +(cost/btc).toFixed(2) : null;
+      const mktVal = btc * price;
+      const unrealized = +(mktVal - cost).toFixed(2);
+      pts.push({ date, btc:+btc.toFixed(8), avgCost });
+      holdPts.push({ date, holdingsBtc: +btc.toFixed(8), holdingsUsd: +mktVal.toFixed(2) });
+      dcaPts.push({ date, buyUsd });
+      feePts.push({ date, fees: +fees.toFixed(8) });
+      rewardPts.push({ date, rewards: +rewards.toFixed(8) });
+      plPts.push({ date, realized: +realized.toFixed(2), unrealized, totalPL: +(realized+unrealized).toFixed(2) });
+      monthlyPts.push({ date, month, buys: buyUsd, sells: 0, rewards: 0, fees: 0 });
+    }
+    return { chart: pts, holdings: holdPts, dca: dcaPts, fees: feePts, rewards: rewardPts, pl: plPts, monthly: monthlyPts };
+  }, [isSample]);
+
+  const sc = isSample ? sampleChartData : null;
 
   const fmtCompactUSD = (v) => {
     const abs = Math.abs(v);
@@ -961,13 +995,30 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     return '$'+Math.round(v);
   };
 
-  const visibleChart = rangeFiltered.chart;
+  const visibleChart = isSample ? sc.chart : rangeFiltered.chart;
   const chartRangeVal = settings.chartRange || 'All';
   const hc = settings.hiddenCharts || {};
+  const _costData = isSample ? sc.chart.filter(d=>d.avgCost!==null) : costData;
+  const _usdHoldings = isSample ? sc.holdings : usdHoldingsData;
+  const _dca = isSample ? sc.dca : rangeFiltered.dca;
+  const _fees = isSample ? sc.fees : rangeFiltered.fees;
+  const _rewards = isSample ? sc.rewards : rangeFiltered.rewards;
+  const _pl = isSample ? sc.pl : plChartData;
+  const _monthly = isSample ? sc.monthly : rangeFiltered.monthly;
+  const S = isSample || undefined; // sampleData prop
 
   return (
     <>
-    <div style={{display:'flex',gap:'.375rem',marginBottom:'.75rem',alignItems:'center',flexWrap:'wrap'}}>
+    {isSample && (
+      <div style={{background:'var(--bg-secondary)',border:'1px solid var(--border-color)',borderRadius:12,padding:'1rem 1.25rem',marginBottom:'1rem',display:'flex',alignItems:'center',gap:'.75rem',flexWrap:'wrap'}}>
+        <span style={{color:'var(--text-tertiary)',display:'flex'}}>{Icon.Info({width:20,height:20})}</span>
+        <div>
+          <div style={{fontWeight:600,fontSize:'.9375rem',color:'var(--text-primary)'}}>Sample Charts</div>
+          <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginTop:'.125rem'}}>These charts use sample data to preview available visualizations. Add your first transaction to see your real portfolio.</div>
+        </div>
+      </div>
+    )}
+    {!isSample && <div style={{display:'flex',gap:'.375rem',marginBottom:'.75rem',alignItems:'center',flexWrap:'wrap'}}>
       {['3M','6M','1Y','5Y','YTD','All','Custom'].map(r => (
         <button key={r} onClick={() => updateSettings({ chartRange: r })}
           className={chartRangeVal===r ? 'btn btn-primary' : 'btn btn-secondary'}
@@ -984,58 +1035,58 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
             color:'var(--text-primary)',fontFamily:'inherit'}}
         />
       )}
-    </div>
+    </div>}
     {(() => {
       const chartRenderers = {
-        accumulatedBtc: () => visibleChart.length > 0 ? <SVGChart
+        accumulatedBtc: () => visibleChart.length > 0 ? <SVGChart sampleData={S}
           data={visibleChart} dataKey="btc" title="Accumulated BTC"
           subtitle={visibleChart[visibleChart.length-1]?.btc.toFixed(8)+' BTC total'}
           color="#f7931a" formatY={v=>v.toFixed(2)}
           formatTooltip={(v)=>{ const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : ''; return v.toFixed(8)+' BTC'+usd; }}
           fillGradient={true}
-          overlay={priceOverlayData.length > 0 ? { data: priceOverlayData, dataKey: 'price', color: '#6b7280', formatY: fmtCompactUSD, formatTooltip: v => '$'+Math.round(v).toLocaleString(), label: 'BTC Price' } : undefined}
+          overlay={!isSample && priceOverlayData.length > 0 ? { data: priceOverlayData, dataKey: 'price', color: '#6b7280', formatY: fmtCompactUSD, formatTooltip: v => '$'+Math.round(v).toLocaleString(), label: 'BTC Price' } : undefined}
         /> : null,
-        costBasis: () => costData.length > 1 ? <SVGChart
-          data={costData} dataKey="avgCost" title="Average Cost Basis"
-          subtitle={'$'+Math.round(costData[costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
+        costBasis: () => _costData.length > 1 ? <SVGChart sampleData={S}
+          data={_costData} dataKey="avgCost" title="Average Cost Basis"
+          subtitle={'$'+Math.round(_costData[_costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
           color="#2563eb" formatY={v=>'$'+Math.round(v/1000)+'k'}
           formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
-          refLine={btcPrice} refLineColor="#16a34a" refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
+          refLine={isSample?undefined:btcPrice} refLineColor="#16a34a" refLineLabel={isSample?undefined:'Now $'+Math.round(btcPrice||0).toLocaleString()}
         /> : null,
-        usdHoldings: () => usdHoldingsData.length > 0 ? <SVGChart
-          data={usdHoldingsData} dataKey="holdingsUsd" title="USD Holdings Value"
-          subtitle={`${fmtUSD(usdHoldingsData[usdHoldingsData.length-1]?.holdingsUsd||0)} using daily BTC closes`}
+        usdHoldings: () => _usdHoldings.length > 0 ? <SVGChart sampleData={S}
+          data={_usdHoldings} dataKey="holdingsUsd" title="USD Holdings Value"
+          subtitle={isSample?'Portfolio value over time':`${fmtUSD(_usdHoldings[_usdHoldings.length-1]?.holdingsUsd||0)} using daily BTC closes`}
           color="#f59e0b" formatY={fmtCompactUSD} formatTooltip={(v)=>`${fmtUSD(v)} at daily close`} fillGradient={true}
         /> : (historicalPriceLoading ? <div className="card"><div className="card-header"><div className="card-title">USD Holdings Value</div><div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>Loading daily BTC closes…</div></div><div className="card-body" style={{color:'var(--text-secondary)'}}>Building historical USD values from Coinbase daily BTC-USD candles.</div></div> : null),
-        dca: () => rangeFiltered.dca.length > 0 ? <SVGChart
-          data={rangeFiltered.dca} dataKey="buyUsd" title="DCA Tracker"
-          subtitle={'$'+Math.round(rangeFiltered.dca.reduce((s,d)=>s+d.buyUsd,0)).toLocaleString()+' total invested'}
+        dca: () => _dca.length > 0 ? <SVGChart sampleData={S}
+          data={_dca} dataKey="buyUsd" title="DCA Tracker"
+          subtitle={'$'+Math.round(_dca.reduce((s,d)=>s+d.buyUsd,0)).toLocaleString()+' total invested'}
           color="#10b981" chartType="bar" formatY={fmtCompactUSD}
           formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
         /> : null,
-        pl: () => plChartData.length > 1 ? <SVGChart
-          data={plChartData} dataKey="totalPL" title="Realized vs Unrealized P&L"
-          subtitle={(plChartData[plChartData.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(plChartData[plChartData.length-1]?.totalPL||0)+' total P&L'}
-          color={plChartData[plChartData.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
+        pl: () => _pl.length > 1 ? <SVGChart sampleData={S}
+          data={_pl} dataKey="totalPL" title="Realized vs Unrealized P&L"
+          subtitle={(_pl[_pl.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(_pl[_pl.length-1]?.totalPL||0)+' total P&L'}
+          color={_pl[_pl.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
           formatY={v => { const sign=v>0?'+':v<0?'-':''; const abs=Math.abs(v); if(abs>=1000000) return sign+'$'+(abs/1000000).toFixed(1).replace(/\.0$/,'')+'M'; if(abs>=1000) return sign+'$'+Math.round(abs/1000)+'k'; if(abs>=1) return sign+'$'+Math.round(abs); return '$0'; }}
           formatTooltip={v => (v>=0?'+':'-')+'$'+Math.round(Math.abs(v)).toLocaleString()}
           refLine={0} refLineColor="var(--text-tertiary)" refLineLabel="Break even"
         /> : null,
-        feeBurn: () => rangeFiltered.fees.length > 1 ? <SVGChart
-          data={rangeFiltered.fees} dataKey="fees" title="Cumulative Fee Burn"
-          subtitle={rangeFiltered.fees[rangeFiltered.fees.length-1]?.fees.toFixed(8)+' BTC in fees'}
+        feeBurn: () => _fees.length > 1 ? <SVGChart sampleData={S}
+          data={_fees} dataKey="fees" title="Cumulative Fee Burn"
+          subtitle={_fees[_fees.length-1]?.fees.toFixed(8)+' BTC in fees'}
           color="#ef4444" formatY={v=>v.toFixed(4)} formatTooltip={v => v.toFixed(8)+' BTC lost to fees'} fillGradient={true}
         /> : null,
-        rewards: () => rangeFiltered.rewards.length > 1 ? <SVGChart
-          data={rangeFiltered.rewards} dataKey="rewards" title="Reward Income"
-          subtitle={rangeFiltered.rewards[rangeFiltered.rewards.length-1]?.rewards.toFixed(8)+' BTC earned'}
+        rewards: () => _rewards.length > 1 ? <SVGChart sampleData={S}
+          data={_rewards} dataKey="rewards" title="Reward Income"
+          subtitle={_rewards[_rewards.length-1]?.rewards.toFixed(8)+' BTC earned'}
           color="#8b5cf6" formatY={v=>v.toFixed(4)}
           formatTooltip={v => { const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : ''; return v.toFixed(8)+' BTC'+usd; }}
           fillGradient={true}
         /> : null,
-        monthly: () => rangeFiltered.monthly.length > 1 ? <SVGChart
-          data={rangeFiltered.monthly} dataKey="buys" title="Monthly Summary"
-          subtitle={rangeFiltered.monthly.length+' months of activity'}
+        monthly: () => _monthly.length > 1 ? <SVGChart sampleData={S}
+          data={_monthly} dataKey="buys" title="Monthly Summary"
+          subtitle={_monthly.length+' months of activity'}
           color="#0ea5e9" chartType="bar" formatY={fmtCompactUSD}
           formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
         /> : null,
@@ -1147,7 +1198,7 @@ function InfoTip({ text }) {
   );
 }
 
-function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel, chartType, overlay, lines, publicData }) {
+function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel, chartType, overlay, lines, publicData, sampleData }) {
   const [tooltip, setTooltip] = React.useState(null);
   const [expanded, setExpanded] = React.useState(false);
   const svgRef = React.useRef(null);
@@ -1435,18 +1486,21 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   ) : null;
 
   return (
-    <div className={`card${publicData?' public-data':''}`}>
+    <div className={`card${publicData?' public-data':''}`} style={sampleData?{opacity:.7}:{}}>
       <div className="card-header" style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between'}}>
-        <div style={{minWidth:0}}>
-          <div className="card-title">{title}</div>
-          <div className="chart-subtitle" style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+        <div style={{minWidth:0,display:'flex',alignItems:'center',gap:'.5rem',flexWrap:'wrap'}}>
+          <div>
+            <div className="card-title">{title}</div>
+            <div className="chart-subtitle" style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+          </div>
+          {sampleData && <span style={{fontSize:'.625rem',fontWeight:700,letterSpacing:'.05em',textTransform:'uppercase',background:'var(--bg-tertiary)',color:'var(--text-tertiary)',border:'1px solid var(--border-color)',borderRadius:'4px',padding:'.125rem .375rem',whiteSpace:'nowrap'}}>Sample</span>}
         </div>
-        <button onClick={()=>{setTooltip(null);setExpanded(true);}} title="Expand chart"
+        {!sampleData && <button onClick={()=>{setTooltip(null);setExpanded(true);}} title="Expand chart"
           style={{background:'none',border:'none',cursor:'pointer',padding:'2px',color:'var(--text-tertiary)',flexShrink:0,marginTop:'2px'}}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
           </svg>
-        </button>
+        </button>}
       </div>
       <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem'}}>
         {renderSVGContent(false)}
