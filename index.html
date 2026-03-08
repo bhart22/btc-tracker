@@ -309,6 +309,7 @@
 
     /* Cards / Sections */
     .card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:12px; box-shadow:var(--shadow-sm); overflow:hidden; margin-bottom:1.25rem; }
+    .settings-grid .card { margin-bottom:0; }
     .card-header { padding:1.125rem 1.5rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:1rem; }
     .card-title { font-size:1rem; font-weight:600; letter-spacing:-.01em; }
     .card-body { padding:1.25rem 1.5rem; }
@@ -677,6 +678,7 @@ const Icon = {
   ChevronLeft: (s)=><svg {...sz} {...s}><polyline points="15 18 9 12 15 6"/></svg>,
   ChevronRight: (s)=><svg {...sz} {...s}><polyline points="9 18 15 12 9 6"/></svg>,
   ChevronDown: (s)=><svg {...sz} {...s}><polyline points="6 9 12 15 18 9"/></svg>,
+  ChevronUp: (s)=><svg {...sz} {...s}><polyline points="6 15 12 9 18 15"/></svg>,
   Lock: (s)=><svg {...sz} {...s}><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>,
   Unlock: (s)=><svg {...sz} {...s}><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.5-2"/></svg>,
   Sun: (s)=><svg {...sz} {...s}><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>,
@@ -694,6 +696,8 @@ const NAV_ITEMS = [
   { key:'export', label:'Export', icon:'Download' },
   { key:'settings', label:'Settings', icon:'Settings' },
 ];
+
+const DEFAULT_CHART_ORDER = ['accumulatedBtc','costBasis','usdHoldings','dca','pl','feeBurn','rewards','monthly','movingAvg'];
 
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
 function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading, settings, updateSettings }) {
@@ -974,138 +978,79 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         />
       )}
     </div>
-    <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
-      {!hc.accumulatedBtc && visibleChart.length > 0 && <SVGChart
-        data={visibleChart}
-        dataKey="btc"
-        title="Accumulated BTC"
-        subtitle={visibleChart[visibleChart.length-1]?.btc.toFixed(8)+' BTC total'}
-        color="#f7931a"
-        formatY={v=>v.toFixed(2)}
-        formatTooltip={(v)=>{
-          const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : '';
-          return v.toFixed(8)+' BTC'+usd;
-        }}
-        fillGradient={true}
-        overlay={priceOverlayData.length > 0 ? {
-          data: priceOverlayData,
-          dataKey: 'price',
-          color: '#6b7280',
-          formatY: fmtCompactUSD,
-          formatTooltip: v => '$'+Math.round(v).toLocaleString(),
-          label: 'BTC Price'
-        } : undefined}
-      />}
-      {!hc.costBasis && costData.length > 1 && <SVGChart
-        data={costData}
-        dataKey="avgCost"
-        title="Average Cost Basis"
-        subtitle={'$'+Math.round(costData[costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
-        color="#2563eb"
-        formatY={v=>'$'+Math.round(v/1000)+'k'}
-        formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
-        refLine={btcPrice}
-        refLineColor="#16a34a"
-        refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
-      />}
-      {!hc.usdHoldings && usdHoldingsData.length > 0 && <SVGChart
-        data={usdHoldingsData}
-        dataKey="holdingsUsd"
-        title="USD Holdings Value"
-        subtitle={`${fmtUSD(usdHoldingsData[usdHoldingsData.length-1]?.holdingsUsd||0)} using daily BTC closes`}
-        color="#f59e0b"
-        formatY={fmtCompactUSD}
-        formatTooltip={(v)=>`${fmtUSD(v)} at daily close`}
-        fillGradient={true}
-      />}
-      {!hc.dca && rangeFiltered.dca.length > 0 && <SVGChart
-        data={rangeFiltered.dca}
-        dataKey="buyUsd"
-        title="DCA Tracker"
-        subtitle={'$'+Math.round(rangeFiltered.dca.reduce((s,d)=>s+d.buyUsd,0)).toLocaleString()+' total invested'}
-        color="#10b981"
-        chartType="bar"
-        formatY={fmtCompactUSD}
-        formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
-      />}
-      {!hc.pl && plChartData.length > 1 && <SVGChart
-        data={plChartData}
-        dataKey="totalPL"
-        title="Realized vs Unrealized P&L"
-        subtitle={(plChartData[plChartData.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(plChartData[plChartData.length-1]?.totalPL||0)+' total P&L'}
-        color={plChartData[plChartData.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
-        formatY={v => {
-          const sign = v>0?'+':v<0?'-':'';
-          const abs = Math.abs(v);
-          if(abs>=1000000) return sign+'$'+(abs/1000000).toFixed(1).replace(/\.0$/,'')+'M';
-          if(abs>=1000) return sign+'$'+Math.round(abs/1000)+'k';
-          if(abs>=1) return sign+'$'+Math.round(abs);
-          return '$0';
-        }}
-        formatTooltip={v => (v>=0?'+':'-')+'$'+Math.round(Math.abs(v)).toLocaleString()}
-        refLine={0}
-        refLineColor="var(--text-tertiary)"
-        refLineLabel="Break even"
-      />}
-      {!hc.feeBurn && rangeFiltered.fees.length > 1 && <SVGChart
-        data={rangeFiltered.fees}
-        dataKey="fees"
-        title="Cumulative Fee Burn"
-        subtitle={rangeFiltered.fees[rangeFiltered.fees.length-1]?.fees.toFixed(8)+' BTC in fees'}
-        color="#ef4444"
-        formatY={v=>v.toFixed(4)}
-        formatTooltip={v => v.toFixed(8)+' BTC lost to fees'}
-        fillGradient={true}
-      />}
-      {!hc.rewards && rangeFiltered.rewards.length > 1 && <SVGChart
-        data={rangeFiltered.rewards}
-        dataKey="rewards"
-        title="Reward Income"
-        subtitle={rangeFiltered.rewards[rangeFiltered.rewards.length-1]?.rewards.toFixed(8)+' BTC earned'}
-        color="#8b5cf6"
-        formatY={v=>v.toFixed(4)}
-        formatTooltip={v => {
-          const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : '';
-          return v.toFixed(8)+' BTC'+usd;
-        }}
-        fillGradient={true}
-      />}
-      {!hc.monthly && rangeFiltered.monthly.length > 1 && <SVGChart
-        data={rangeFiltered.monthly}
-        dataKey="buys"
-        title="Monthly Summary"
-        subtitle={rangeFiltered.monthly.length+' months of activity'}
-        color="#0ea5e9"
-        chartType="bar"
-        formatY={fmtCompactUSD}
-        formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
-      />}
-      {!hc.movingAvg && maChartData.length > 0 && <SVGChart
-        data={maChartData}
-        dataKey="price"
-        title="BTC Price & Moving Averages"
-        subtitle={fmtCompactUSD(maChartData[maChartData.length-1]?.price||0)+' current'}
-        color="#f7931a"
-        formatY={fmtCompactUSD}
-        formatTooltip={v => '$'+Math.round(v).toLocaleString()}
-        lines={[
-          ...((settings.maLines?.ma50d!==false) && maChartData.some(d=>d.ma50d!=null) ? [{ dataKey:'ma50d', color:'#10b981', label:'50D MA', dashed:false, formatTooltip:v=>'50D: $'+Math.round(v).toLocaleString() }] : []),
-          ...((settings.maLines?.ma200d!==false) && maChartData.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
-          ...((settings.maLines?.ma200w!==false) && maChartData.some(d=>d.ma200w!=null) ? [{ dataKey:'ma200w', color:'#dc2626', label:'200W MA', dashed:true, formatTooltip:v=>'200W: $'+Math.round(v).toLocaleString() }] : []),
-        ]}
-      />}
-      {!hc.usdHoldings && historicalPriceLoading && !usdHoldingsData.length && (
-        <div className="card">
-          <div className="card-header">
-            <div className="card-title">USD Holdings Value</div>
-            <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>Loading daily BTC closes…</div>
-          </div>
-          <div className="card-body" style={{color:'var(--text-secondary)'}}>
-            Building historical USD values from Coinbase daily BTC-USD candles.
-          </div>
+    {(() => {
+      const chartRenderers = {
+        accumulatedBtc: () => visibleChart.length > 0 ? <SVGChart
+          data={visibleChart} dataKey="btc" title="Accumulated BTC"
+          subtitle={visibleChart[visibleChart.length-1]?.btc.toFixed(8)+' BTC total'}
+          color="#f7931a" formatY={v=>v.toFixed(2)}
+          formatTooltip={(v)=>{ const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : ''; return v.toFixed(8)+' BTC'+usd; }}
+          fillGradient={true}
+          overlay={priceOverlayData.length > 0 ? { data: priceOverlayData, dataKey: 'price', color: '#6b7280', formatY: fmtCompactUSD, formatTooltip: v => '$'+Math.round(v).toLocaleString(), label: 'BTC Price' } : undefined}
+        /> : null,
+        costBasis: () => costData.length > 1 ? <SVGChart
+          data={costData} dataKey="avgCost" title="Average Cost Basis"
+          subtitle={'$'+Math.round(costData[costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
+          color="#2563eb" formatY={v=>'$'+Math.round(v/1000)+'k'}
+          formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
+          refLine={btcPrice} refLineColor="#16a34a" refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
+        /> : null,
+        usdHoldings: () => usdHoldingsData.length > 0 ? <SVGChart
+          data={usdHoldingsData} dataKey="holdingsUsd" title="USD Holdings Value"
+          subtitle={`${fmtUSD(usdHoldingsData[usdHoldingsData.length-1]?.holdingsUsd||0)} using daily BTC closes`}
+          color="#f59e0b" formatY={fmtCompactUSD} formatTooltip={(v)=>`${fmtUSD(v)} at daily close`} fillGradient={true}
+        /> : (historicalPriceLoading ? <div className="card"><div className="card-header"><div className="card-title">USD Holdings Value</div><div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>Loading daily BTC closes…</div></div><div className="card-body" style={{color:'var(--text-secondary)'}}>Building historical USD values from Coinbase daily BTC-USD candles.</div></div> : null),
+        dca: () => rangeFiltered.dca.length > 0 ? <SVGChart
+          data={rangeFiltered.dca} dataKey="buyUsd" title="DCA Tracker"
+          subtitle={'$'+Math.round(rangeFiltered.dca.reduce((s,d)=>s+d.buyUsd,0)).toLocaleString()+' total invested'}
+          color="#10b981" chartType="bar" formatY={fmtCompactUSD}
+          formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
+        /> : null,
+        pl: () => plChartData.length > 1 ? <SVGChart
+          data={plChartData} dataKey="totalPL" title="Realized vs Unrealized P&L"
+          subtitle={(plChartData[plChartData.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(plChartData[plChartData.length-1]?.totalPL||0)+' total P&L'}
+          color={plChartData[plChartData.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
+          formatY={v => { const sign=v>0?'+':v<0?'-':''; const abs=Math.abs(v); if(abs>=1000000) return sign+'$'+(abs/1000000).toFixed(1).replace(/\.0$/,'')+'M'; if(abs>=1000) return sign+'$'+Math.round(abs/1000)+'k'; if(abs>=1) return sign+'$'+Math.round(abs); return '$0'; }}
+          formatTooltip={v => (v>=0?'+':'-')+'$'+Math.round(Math.abs(v)).toLocaleString()}
+          refLine={0} refLineColor="var(--text-tertiary)" refLineLabel="Break even"
+        /> : null,
+        feeBurn: () => rangeFiltered.fees.length > 1 ? <SVGChart
+          data={rangeFiltered.fees} dataKey="fees" title="Cumulative Fee Burn"
+          subtitle={rangeFiltered.fees[rangeFiltered.fees.length-1]?.fees.toFixed(8)+' BTC in fees'}
+          color="#ef4444" formatY={v=>v.toFixed(4)} formatTooltip={v => v.toFixed(8)+' BTC lost to fees'} fillGradient={true}
+        /> : null,
+        rewards: () => rangeFiltered.rewards.length > 1 ? <SVGChart
+          data={rangeFiltered.rewards} dataKey="rewards" title="Reward Income"
+          subtitle={rangeFiltered.rewards[rangeFiltered.rewards.length-1]?.rewards.toFixed(8)+' BTC earned'}
+          color="#8b5cf6" formatY={v=>v.toFixed(4)}
+          formatTooltip={v => { const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : ''; return v.toFixed(8)+' BTC'+usd; }}
+          fillGradient={true}
+        /> : null,
+        monthly: () => rangeFiltered.monthly.length > 1 ? <SVGChart
+          data={rangeFiltered.monthly} dataKey="buys" title="Monthly Summary"
+          subtitle={rangeFiltered.monthly.length+' months of activity'}
+          color="#0ea5e9" chartType="bar" formatY={fmtCompactUSD}
+          formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
+        /> : null,
+        movingAvg: () => maChartData.length > 0 ? <SVGChart
+          data={maChartData} dataKey="price" title="BTC Price & Moving Averages"
+          subtitle={fmtCompactUSD(maChartData[maChartData.length-1]?.price||0)+' current'}
+          color="#f7931a" formatY={fmtCompactUSD} formatTooltip={v => '$'+Math.round(v).toLocaleString()}
+          lines={[
+            ...((settings.maLines?.ma50d!==false) && maChartData.some(d=>d.ma50d!=null) ? [{ dataKey:'ma50d', color:'#10b981', label:'50D MA', dashed:false, formatTooltip:v=>'50D: $'+Math.round(v).toLocaleString() }] : []),
+            ...((settings.maLines?.ma200d!==false) && maChartData.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
+            ...((settings.maLines?.ma200w!==false) && maChartData.some(d=>d.ma200w!=null) ? [{ dataKey:'ma200w', color:'#dc2626', label:'200W MA', dashed:true, formatTooltip:v=>'200W: $'+Math.round(v).toLocaleString() }] : []),
+          ]}
+        /> : null,
+      };
+      const order = settings.chartOrder || DEFAULT_CHART_ORDER;
+      const reconciledOrder = [...order.filter(k => DEFAULT_CHART_ORDER.includes(k)), ...DEFAULT_CHART_ORDER.filter(k => !order.includes(k))];
+      return (
+        <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
+          {reconciledOrder.map(key => !hc[key] && chartRenderers[key] ? <React.Fragment key={key}>{chartRenderers[key]()}</React.Fragment> : null)}
         </div>
-      )}
-    </div>
+      );
+    })()}
     </>
   );
 }
@@ -2938,7 +2883,7 @@ function App() {
 
         {/* ── SETTINGS ── */}
         {tab==='settings' && (
-          <>
+          <div className="settings-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(400px,1fr))',gap:'1.25rem',alignItems:'start'}}>
             {/* Cloud Sync */}
             <div className="card">
               <div className="card-header">
@@ -3063,74 +3008,94 @@ function App() {
               </div>
             </div>
 
-            {/* Chart visibility */}
-            <div className="card">
-              <div className="card-header">
-                <div className="card-title">Dashboard Charts</div>
-              </div>
-              <div className="card-body">
-                <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>Toggle which charts appear on your dashboard.</div>
-                {[
-                  { key:'accumulatedBtc', label:'Accumulated BTC', desc:'Total BTC holdings over time with price overlay' },
-                  { key:'costBasis', label:'Average Cost Basis', desc:'Running average cost per BTC' },
-                  { key:'usdHoldings', label:'USD Holdings Value', desc:'Portfolio value in USD using daily closes' },
-                  { key:'dca', label:'DCA Tracker', desc:'Buy amounts over time' },
-                  { key:'pl', label:'Realized vs Unrealized P&L', desc:'Profit & loss from sells and unrealized gains' },
-                  { key:'feeBurn', label:'Cumulative Fee Burn', desc:'Total BTC lost to network and exchange fees' },
-                  { key:'rewards', label:'Reward Income', desc:'Cumulative staking and earn rewards' },
-                  { key:'monthly', label:'Monthly Summary', desc:'Monthly buy volume as bar chart' },
-                  { key:'movingAvg', label:'BTC Price & Moving Averages', desc:'BTC price with 200-day and 200-week MAs' },
-                ].map((chart, i) => (
-                  <div key={chart.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.75rem',paddingTop:'.75rem'}:{})}}>
-                    <div>
-                      <div style={{fontSize:'.9375rem',fontWeight:600}}>{chart.label}</div>
-                      <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{chart.desc}</div>
-                    </div>
-                    <label className="theme-switch">
-                      <input type="checkbox" checked={!(settings.hiddenCharts||{})[chart.key]} onChange={e=>{
-                        const hc = {...(settings.hiddenCharts||{})};
-                        if(e.target.checked) delete hc[chart.key]; else hc[chart.key]=true;
-                        updateSettings({hiddenCharts:hc});
-                      }} />
-                      <span className="theme-slider"></span>
-                    </label>
+            {/* Dashboard Charts — visibility & order */}
+            {(() => {
+              const chartDefs = [
+                { key:'accumulatedBtc', label:'Accumulated BTC', desc:'Total BTC holdings over time with price overlay' },
+                { key:'costBasis', label:'Average Cost Basis', desc:'Running average cost per BTC' },
+                { key:'usdHoldings', label:'USD Holdings Value', desc:'Portfolio value in USD using daily closes' },
+                { key:'dca', label:'DCA Tracker', desc:'Buy amounts over time' },
+                { key:'pl', label:'Realized vs Unrealized P&L', desc:'Profit & loss from sells and unrealized gains' },
+                { key:'feeBurn', label:'Cumulative Fee Burn', desc:'Total BTC lost to network and exchange fees' },
+                { key:'rewards', label:'Reward Income', desc:'Cumulative staking and earn rewards' },
+                { key:'monthly', label:'Monthly Summary', desc:'Monthly buy volume as bar chart' },
+                { key:'movingAvg', label:'BTC Price & Moving Averages', desc:'BTC price with 50-day, 200-day, and 200-week MAs' },
+              ];
+              const defMap = {};
+              chartDefs.forEach(c => defMap[c.key] = c);
+              const order = settings.chartOrder || DEFAULT_CHART_ORDER;
+              const orderedCharts = [...order.filter(k => defMap[k]), ...DEFAULT_CHART_ORDER.filter(k => !order.includes(k))].map(k => defMap[k]);
+              const moveChart = (key, dir) => {
+                const o = orderedCharts.map(c => c.key);
+                const idx = o.indexOf(key);
+                const swap = idx + dir;
+                if(swap < 0 || swap >= o.length) return;
+                [o[idx], o[swap]] = [o[swap], o[idx]];
+                updateSettings({ chartOrder: o });
+              };
+              const maLineDefs = [
+                { key:'ma50d', label:'50-Day MA', color:'#10b981' },
+                { key:'ma200d', label:'200-Day MA', color:'#2563eb' },
+                { key:'ma200w', label:'200-Week MA', color:'#dc2626' },
+              ];
+              return (
+                <div className="card">
+                  <div className="card-header">
+                    <div className="card-title">Dashboard Charts</div>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Moving Average Lines */}
-            <div className="card">
-              <div className="card-header">
-                <div className="card-title">Moving Average Lines</div>
-              </div>
-              <div className="card-body">
-                <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>Choose which moving averages appear on the BTC Price chart.</div>
-                {[
-                  { key:'ma50d', label:'50-Day MA', desc:'Short-term trend, golden/death cross signals (green)', color:'#10b981' },
-                  { key:'ma200d', label:'200-Day MA', desc:'Primary bull/bear indicator (blue)', color:'#2563eb' },
-                  { key:'ma200w', label:'200-Week MA', desc:'Long-term cycle floor (red, dashed)', color:'#dc2626' },
-                ].map((ma, i) => (
-                  <div key={ma.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.75rem',paddingTop:'.75rem'}:{})}}>
-                    <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
-                      <span style={{width:10,height:10,borderRadius:'50%',background:ma.color,flexShrink:0}}/>
-                      <div>
-                        <div style={{fontSize:'.9375rem',fontWeight:600}}>{ma.label}</div>
-                        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{ma.desc}</div>
-                      </div>
-                    </div>
-                    <label className="theme-switch">
-                      <input type="checkbox" checked={(settings.maLines||{})[ma.key]!==false} onChange={e=>{
-                        const ml = {...(settings.maLines||{})};
-                        if(e.target.checked) delete ml[ma.key]; else ml[ma.key]=false;
-                        updateSettings({maLines:ml});
-                      }} />
-                      <span className="theme-slider"></span>
-                    </label>
+                  <div className="card-body">
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>Toggle visibility and reorder your dashboard charts.</div>
+                    {orderedCharts.map((chart, i) => (
+                      <React.Fragment key={chart.key}>
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'.5rem',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.625rem',paddingTop:'.625rem'}:{})}}>
+                          <div style={{flex:1,minWidth:0}} title={chart.desc}>
+                            <div style={{fontSize:'.875rem',fontWeight:600}}>{chart.label}</div>
+                          </div>
+                          <div style={{display:'flex',alignItems:'center',gap:'.125rem',flexShrink:0}}>
+                            <button onClick={()=>moveChart(chart.key,-1)} disabled={i===0} title="Move up"
+                              style={{background:'none',border:'none',cursor:i===0?'default':'pointer',padding:'2px',color:i===0?'var(--border-color)':'var(--text-tertiary)',lineHeight:0}}>
+                              {Icon.ChevronUp({width:14,height:14})}
+                            </button>
+                            <button onClick={()=>moveChart(chart.key,1)} disabled={i===orderedCharts.length-1} title="Move down"
+                              style={{background:'none',border:'none',cursor:i===orderedCharts.length-1?'default':'pointer',padding:'2px',color:i===orderedCharts.length-1?'var(--border-color)':'var(--text-tertiary)',lineHeight:0}}>
+                              {Icon.ChevronDown({width:14,height:14})}
+                            </button>
+                          </div>
+                          <label className="theme-switch" style={{flexShrink:0}}>
+                            <input type="checkbox" checked={!(settings.hiddenCharts||{})[chart.key]} onChange={e=>{
+                              const hc = {...(settings.hiddenCharts||{})};
+                              if(e.target.checked) delete hc[chart.key]; else hc[chart.key]=true;
+                              updateSettings({hiddenCharts:hc});
+                            }} />
+                            <span className="theme-slider"></span>
+                          </label>
+                        </div>
+                        {chart.key === 'movingAvg' && !(settings.hiddenCharts||{}).movingAvg && (
+                          <div style={{marginLeft:'1.25rem',paddingLeft:'.75rem',borderLeft:'2px solid var(--border-color)',marginTop:'.5rem'}}>
+                            {maLineDefs.map((ma, mi) => (
+                              <div key={ma.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'.5rem',...(mi>0?{borderTop:'1px solid var(--border-color)',marginTop:'.5rem',paddingTop:'.5rem'}:{})}}>
+                                <div style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                                  <span style={{width:8,height:8,borderRadius:'50%',background:ma.color,flexShrink:0}}/>
+                                  <span style={{fontSize:'.8125rem',fontWeight:500}}>{ma.label}</span>
+                                </div>
+                                <label className="theme-switch" style={{flexShrink:0}}>
+                                  <input type="checkbox" checked={(settings.maLines||{})[ma.key]!==false} onChange={e=>{
+                                    const ml = {...(settings.maLines||{})};
+                                    if(e.target.checked) delete ml[ma.key]; else ml[ma.key]=false;
+                                    updateSettings({maLines:ml});
+                                  }} />
+                                  <span className="theme-slider"></span>
+                                </label>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </React.Fragment>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
+                </div>
+              );
+            })()}
 
             {/* Data management */}
             <div className="card">
@@ -3188,7 +3153,7 @@ function App() {
                 </div>
               </div>
             </div>
-          </>
+          </div>
         )}
       </main>
       </div>{/* end app-body */}
