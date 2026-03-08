@@ -912,6 +912,12 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         for(let j=i-199; j<=i; j++) sum += allDays[j][1];
         pt.ma200d = +(sum/200).toFixed(2);
       }
+      // 50-week MA (350 days)
+      if(i >= 349) {
+        let sum = 0;
+        for(let j=i-349; j<=i; j++) sum += allDays[j][1];
+        pt.ma50w = +(sum/350).toFixed(2);
+      }
       // 200-week MA (1400 days)
       if(i >= 1399) {
         let sum = 0;
@@ -1084,6 +1090,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatTooltip={v => '$'+Math.round(v).toLocaleString()}
         lines={[
           ...(maChartData.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
+          ...(maChartData.some(d=>d.ma50w!=null) ? [{ dataKey:'ma50w', color:'#8b5cf6', label:'50W MA', dashed:false, formatTooltip:v=>'50W: $'+Math.round(v).toLocaleString() }] : []),
           ...(maChartData.some(d=>d.ma200w!=null) ? [{ dataKey:'ma200w', color:'#dc2626', label:'200W MA', dashed:true, formatTooltip:v=>'200W: $'+Math.round(v).toLocaleString() }] : []),
         ]}
       />}
