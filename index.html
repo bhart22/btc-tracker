@@ -697,7 +697,7 @@ const NAV_ITEMS = [
 
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
 function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading, settings, updateSettings }) {
-  const { chartData, holdingsHistory, dcaData } = React.useMemo(() => {
+  const { chartData, holdingsHistory, dcaData, feeBurnData, rewardData, plData, monthlySummary } = React.useMemo(() => {
     const sorted = transactions
       .map(tx => ({ ...tx, normalizedDate: normalizeDate(tx.date) }))
       .filter(tx => tx.normalizedDate)
@@ -708,6 +708,11 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     const dcaMap = {};
     let runningBTC = 0;
     let runningBTCForCost = 0;
+    let cumulativeFees = 0;
+    let cumulativeRewards = 0;
+    let realizedPL = 0;
+    const feePoints = [], rewardPoints = [], plPoints = [];
+    const monthlyMap = {};
     const ensureWallet = (name) => {
       if(!name) return;
       if(walletBalances[name]===undefined) walletBalances[name]=0;
@@ -727,9 +732,15 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
 
       // Cost basis — only non-excluded transactions
       if(!tx.excludeStats) {
-        if(tx.type==='Buy') { runningBTCForCost+=amt; totalCost+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee; }
-        else if(tx.type==='Reward') { runningBTCForCost+=amt; }
+        if(tx.type==='Buy') {
+          runningBTCForCost+=amt;
+          totalCost+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee;
+        } else if(tx.type==='Reward') { runningBTCForCost+=amt; }
         else if(tx.type==='Sell') {
+          const avgCostBasis = runningBTCForCost>0.00000001 ? totalCost/runningBTCForCost : 0;
+          const proceeds = tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price);
+          const costOfSold = amt * avgCostBasis;
+          realizedPL += proceeds - costOfSold;
           const ratio = amt/Math.max(runningBTCForCost,0.00000001);
           totalCost-=totalCost*ratio; runningBTCForCost-=amt;
         } else if(tx.type==='Transfer') { runningBTCForCost-=fee; }
@@ -742,6 +753,42 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         if(buyUsd > 0) {
           dcaMap[tx.normalizedDate] = (dcaMap[tx.normalizedDate]||0) + buyUsd;
         }
+      }
+
+      // Fee burn tracking (all tx types with fees)
+      if(fee > 0 && !tx.excludeStats) {
+        cumulativeFees += fee;
+        const lastFee = feePoints[feePoints.length-1];
+        if(lastFee && lastFee.date===tx.normalizedDate) feePoints[feePoints.length-1] = { date:tx.normalizedDate, fees:+cumulativeFees.toFixed(8) };
+        else feePoints.push({ date:tx.normalizedDate, fees:+cumulativeFees.toFixed(8) });
+      }
+
+      // Reward income tracking
+      if(tx.type==='Reward' && !tx.excludeStats) {
+        cumulativeRewards += amt;
+        const lastRew = rewardPoints[rewardPoints.length-1];
+        if(lastRew && lastRew.date===tx.normalizedDate) rewardPoints[rewardPoints.length-1] = { date:tx.normalizedDate, rewards:+cumulativeRewards.toFixed(8) };
+        else rewardPoints.push({ date:tx.normalizedDate, rewards:+cumulativeRewards.toFixed(8) });
+      }
+
+      // P&L tracking (realized from sells + unrealized from current holdings)
+      if(!tx.excludeStats && (tx.type==='Buy'||tx.type==='Sell'||tx.type==='Reward')) {
+        const unrealized = runningBTCForCost > 0.00000001 ? runningBTCForCost * price - totalCost : 0;
+        const lastPL = plPoints[plPoints.length-1];
+        const plPt = { date:tx.normalizedDate, realized:+realizedPL.toFixed(2), unrealized:+unrealized.toFixed(2), totalPL:+(realizedPL+unrealized).toFixed(2) };
+        if(lastPL && lastPL.date===tx.normalizedDate) plPoints[plPoints.length-1] = plPt;
+        else plPoints.push(plPt);
+      }
+
+      // Monthly summary
+      if(!tx.excludeStats) {
+        const month = tx.normalizedDate.slice(0,7); // YYYY-MM
+        if(!monthlyMap[month]) monthlyMap[month] = { buys:0, sells:0, rewards:0, fees:0 };
+        const buyUsd = tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price);
+        if(tx.type==='Buy') monthlyMap[month].buys += buyUsd;
+        else if(tx.type==='Sell') monthlyMap[month].sells += (tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price));
+        if(tx.type==='Reward') monthlyMap[month].rewards += amt;
+        if(fee > 0) monthlyMap[month].fees += fee;
       }
 
       // Track included-transaction holdings history for dashboard value charts.
@@ -777,13 +824,16 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       holdingsPoints.shift();
     }
     const dcaPts = Object.entries(dcaMap).sort((a,b)=>a[0].localeCompare(b[0])).map(([date,buyUsd])=>({date,buyUsd:+buyUsd.toFixed(2)}));
-    return { chartData: points, holdingsHistory: holdingsPoints, dcaData: dcaPts };
+    const monthlyPts = Object.entries(monthlyMap).sort((a,b)=>a[0].localeCompare(b[0])).map(([month, d])=>({
+      date: month+'-15', month, buys:+d.buys.toFixed(2), sells:+d.sells.toFixed(2), rewards:+d.rewards.toFixed(8), fees:+d.fees.toFixed(8)
+    }));
+    return { chartData: points, holdingsHistory: holdingsPoints, dcaData: dcaPts, feeBurnData: feePoints, rewardData: rewardPoints, plData: plPoints, monthlySummary: monthlyPts };
   }, [transactions, wallets]);
 
   // Time-range filtering
   const rangeFiltered = React.useMemo(() => {
     const range = settings.chartRange || 'All';
-    if(range === 'All') return { chart: chartData, holdings: holdingsHistory, dca: dcaData };
+    if(range === 'All') return { chart: chartData, holdings: holdingsHistory, dca: dcaData, fees: feeBurnData, rewards: rewardData, pl: plData, monthly: monthlySummary };
     let cutoff;
     if(range === 'Custom') {
       cutoff = settings.chartRangeCustom || '2000-01-01';
@@ -799,8 +849,12 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       chart: chartData.filter(d => d.date >= cutoff),
       holdings: holdingsHistory.filter(d => d.date >= cutoff),
       dca: dcaData.filter(d => d.date >= cutoff),
+      fees: feeBurnData.filter(d => d.date >= cutoff),
+      rewards: rewardData.filter(d => d.date >= cutoff),
+      pl: plData.filter(d => d.date >= cutoff),
+      monthly: monthlySummary.filter(d => d.date >= cutoff),
     };
-  }, [chartData, holdingsHistory, dcaData, settings.chartRange, settings.chartRangeCustom]);
+  }, [chartData, holdingsHistory, dcaData, feeBurnData, rewardData, plData, monthlySummary, settings.chartRange, settings.chartRangeCustom]);
 
   const costData = React.useMemo(() => rangeFiltered.chart.filter(d=>d.avgCost!==null), [rangeFiltered.chart]);
   const usdHoldingsData = React.useMemo(() => {
@@ -834,6 +888,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
 
   const visibleChart = rangeFiltered.chart;
   const chartRangeVal = settings.chartRange || 'All';
+  const hc = settings.hiddenCharts || {};
 
   return (
     <>
@@ -856,7 +911,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       )}
     </div>
     <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
-      {visibleChart.length > 0 && <SVGChart
+      {!hc.accumulatedBtc && visibleChart.length > 0 && <SVGChart
         data={visibleChart}
         dataKey="btc"
         title="Accumulated BTC"
@@ -877,7 +932,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
           label: 'BTC Price'
         } : undefined}
       />}
-      {costData.length > 1 && <SVGChart
+      {!hc.costBasis && costData.length > 1 && <SVGChart
         data={costData}
         dataKey="avgCost"
         title="Average Cost Basis"
@@ -889,7 +944,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         refLineColor="#16a34a"
         refLineLabel={'Now $'+Math.round(btcPrice||0).toLocaleString()}
       />}
-      {usdHoldingsData.length > 0 && <SVGChart
+      {!hc.usdHoldings && usdHoldingsData.length > 0 && <SVGChart
         data={usdHoldingsData}
         dataKey="holdingsUsd"
         title="USD Holdings Value"
@@ -899,7 +954,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatTooltip={(v)=>`${fmtUSD(v)} at daily close`}
         fillGradient={true}
       />}
-      {rangeFiltered.dca.length > 0 && <SVGChart
+      {!hc.dca && rangeFiltered.dca.length > 0 && <SVGChart
         data={rangeFiltered.dca}
         dataKey="buyUsd"
         title="DCA Tracker"
@@ -909,7 +964,52 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatY={fmtCompactUSD}
         formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
       />}
-      {historicalPriceLoading && !usdHoldingsData.length && (
+      {!hc.pl && rangeFiltered.pl.length > 1 && <SVGChart
+        data={rangeFiltered.pl}
+        dataKey="totalPL"
+        title="Realized vs Unrealized P&L"
+        subtitle={(rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL||0)+' total P&L'}
+        color={rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
+        formatY={fmtCompactUSD}
+        formatTooltip={v => (v>=0?'+':'')+fmtCompactUSD(v)}
+        refLine={0}
+        refLineColor="var(--text-tertiary)"
+        refLineLabel="Break even"
+      />}
+      {!hc.feeBurn && rangeFiltered.fees.length > 1 && <SVGChart
+        data={rangeFiltered.fees}
+        dataKey="fees"
+        title="Cumulative Fee Burn"
+        subtitle={rangeFiltered.fees[rangeFiltered.fees.length-1]?.fees.toFixed(8)+' BTC in fees'}
+        color="#ef4444"
+        formatY={v=>v.toFixed(4)}
+        formatTooltip={v => v.toFixed(8)+' BTC lost to fees'}
+        fillGradient={true}
+      />}
+      {!hc.rewards && rangeFiltered.rewards.length > 1 && <SVGChart
+        data={rangeFiltered.rewards}
+        dataKey="rewards"
+        title="Reward Income"
+        subtitle={rangeFiltered.rewards[rangeFiltered.rewards.length-1]?.rewards.toFixed(8)+' BTC earned'}
+        color="#8b5cf6"
+        formatY={v=>v.toFixed(4)}
+        formatTooltip={v => {
+          const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : '';
+          return v.toFixed(8)+' BTC'+usd;
+        }}
+        fillGradient={true}
+      />}
+      {!hc.monthly && rangeFiltered.monthly.length > 1 && <SVGChart
+        data={rangeFiltered.monthly}
+        dataKey="buys"
+        title="Monthly Summary"
+        subtitle={rangeFiltered.monthly.length+' months of activity'}
+        color="#0ea5e9"
+        chartType="bar"
+        formatY={fmtCompactUSD}
+        formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
+      />}
+      {!hc.usdHoldings && historicalPriceLoading && !usdHoldingsData.length && (
         <div className="card">
           <div className="card-header">
             <div className="card-title">USD Holdings Value</div>
@@ -2735,6 +2835,41 @@ function App() {
                     <span className="theme-slider"></span>
                   </label>
                 </div>
+              </div>
+            </div>
+
+            {/* Chart visibility */}
+            <div className="card">
+              <div className="card-header">
+                <div className="card-title">Dashboard Charts</div>
+              </div>
+              <div className="card-body">
+                <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>Toggle which charts appear on your dashboard.</div>
+                {[
+                  { key:'accumulatedBtc', label:'Accumulated BTC', desc:'Total BTC holdings over time with price overlay' },
+                  { key:'costBasis', label:'Average Cost Basis', desc:'Running average cost per BTC' },
+                  { key:'usdHoldings', label:'USD Holdings Value', desc:'Portfolio value in USD using daily closes' },
+                  { key:'dca', label:'DCA Tracker', desc:'Buy amounts over time' },
+                  { key:'pl', label:'Realized vs Unrealized P&L', desc:'Profit & loss from sells and unrealized gains' },
+                  { key:'feeBurn', label:'Cumulative Fee Burn', desc:'Total BTC lost to network and exchange fees' },
+                  { key:'rewards', label:'Reward Income', desc:'Cumulative staking and earn rewards' },
+                  { key:'monthly', label:'Monthly Summary', desc:'Monthly buy volume as bar chart' },
+                ].map((chart, i) => (
+                  <div key={chart.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.75rem',paddingTop:'.75rem'}:{})}}>
+                    <div>
+                      <div style={{fontSize:'.9375rem',fontWeight:600}}>{chart.label}</div>
+                      <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{chart.desc}</div>
+                    </div>
+                    <label className="theme-switch">
+                      <input type="checkbox" checked={!(settings.hiddenCharts||{})[chart.key]} onChange={e=>{
+                        const hc = {...(settings.hiddenCharts||{})};
+                        if(e.target.checked) delete hc[chart.key]; else hc[chart.key]=true;
+                        updateSettings({hiddenCharts:hc});
+                      }} />
+                      <span className="theme-slider"></span>
+                    </label>
+                  </div>
+                ))}
               </div>
             </div>
 
