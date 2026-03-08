@@ -425,8 +425,10 @@
     .empty-sub { font-size:.8125rem; }
 
     /* Price pill */
-    .price-pill { display:inline-flex; align-items:center; gap:.375rem; font-size:.75rem; padding:.25rem .625rem; border-radius:100px; background:var(--bitcoin-light); color:var(--bitcoin-orange); font-weight:600; font-family:'JetBrains Mono',monospace; }
+    .price-pill { display:inline-flex; align-items:center; gap:.375rem; font-size:.75rem; padding:.25rem .625rem; border-radius:100px; background:var(--bitcoin-light); color:var(--bitcoin-orange); font-weight:600; font-family:'JetBrains Mono',monospace; transition:opacity .15s; }
+    .price-pill:hover { opacity:.8; }
     .price-dot { width:6px; height:6px; border-radius:50%; background:var(--bitcoin-orange); animation:pulse 2s infinite; }
+    .price-dot.loading { animation:spin 1s linear infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
     @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
 
@@ -1270,7 +1272,11 @@ function App() {
     finally { setPriceLoading(false); }
   }, []);
 
-  useEffect(() => { fetchPrice(); }, []);
+  useEffect(() => {
+    fetchPrice();
+    const id = setInterval(fetchPrice, 60000);
+    return () => clearInterval(id);
+  }, []);
   useEffect(() => {
     if(!firstTransactionDate) {
       setHistoricalPrices({});
@@ -1905,14 +1911,11 @@ function App() {
               </button>
             )}
             {btcPrice && (
-              <div className="price-pill">
-                <div className="price-dot"/>
+              <div className="price-pill" onClick={fetchPrice} style={{cursor:'pointer'}} title="Click to refresh BTC price">
+                <div className={`price-dot${priceLoading?' loading':''}`}/>
                 {fmtUSD(btcPrice)}
               </div>
             )}
-            <button className="btn btn-secondary btn-sm" onClick={fetchPrice} disabled={priceLoading} title="Refresh BTC price" style={{padding:'.375rem .5rem',minWidth:0}}>
-              {priceLoading ? Icon.Refresh({width:13,height:13,style:{animation:'spin 1s linear infinite'}}) : Icon.Refresh({width:13,height:13})}
-            </button>
             <button className="btn btn-secondary btn-sm" onClick={()=>updateSettings({hideValues:!settings.hideValues})} title={settings.hideValues?'Show values':'Hide values'} style={{padding:'.375rem .5rem',minWidth:0}}>
               {settings.hideValues ? Icon.EyeOff({width:14,height:14}) : Icon.Eye({width:14,height:14})}
             </button>
