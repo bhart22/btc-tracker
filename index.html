@@ -284,7 +284,7 @@
 
     /* Main */
     .main {
-      flex:1; max-width:1600px; width:100%; margin:0 auto; padding:1.5rem; min-width:0; overflow-x:hidden;
+      flex:1; max-width:100%; width:100%; margin:0 auto; padding:1.5rem; min-width:0; overflow-x:hidden;
       background-color:var(--main-surface);
       background-image:radial-gradient(circle, var(--main-dot-color) 1.2px, transparent 1.2px);
       background-size:20px 20px;
@@ -323,7 +323,7 @@
     .stat-value.btc { color:var(--bitcoin-orange); }
     .stat-value.green { color:var(--green); }
     .stat-value.red { color:var(--red); }
-    .values-hidden .stat-value, .values-hidden .stat-sub, .values-hidden .wallet-btc, .values-hidden .wallet-usd, .values-hidden .price-pill { filter:blur(8px); user-select:none; pointer-events:none; }
+    .values-hidden .stat-value, .values-hidden .stat-sub, .values-hidden .wallet-btc, .values-hidden .wallet-usd, .values-hidden .pie-total, .values-hidden .chart-subtitle { filter:blur(8px); user-select:none; pointer-events:none; }
 
     /* Badges */
     .badge { display:inline-flex; padding:.2rem .5rem; border-radius:5px; font-size:.6875rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; white-space:nowrap; }
@@ -922,7 +922,7 @@ function PieChart({ segments, totalBTC, btcPrice }) {
           </div>
         ))}
       </div>
-      <div style={{textAlign:'center',fontFamily:'JetBrains Mono,monospace',fontWeight:700,fontSize:'1rem',color:'var(--bitcoin-orange)'}}>
+      <div className="pie-total" style={{textAlign:'center',fontFamily:'JetBrains Mono,monospace',fontWeight:700,fontSize:'1rem',color:'var(--bitcoin-orange)'}}>
         {fmtBTC(totalBTC)} BTC
       </div>
       {hover !== null && segments[hover] && ReactDOM.createPortal(
@@ -1003,7 +1003,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
     <div className="card">
       <div className="card-header">
         <div className="card-title">{title}</div>
-        <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+        <div className="chart-subtitle" style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
       </div>
       <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem'}}>
         <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:'block',overflow:'visible'}}
