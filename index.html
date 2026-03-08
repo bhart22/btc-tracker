@@ -1187,6 +1187,17 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const yMax = refLine!=null ? Math.max(maxV, refLine+(Math.abs(refLine)*0.03||maxV*0.03)) : maxV;
   const yRange = yMax-yMin || 1;
 
+  // Nice tick step helper
+  const niceStep = (range, count) => {
+    if(!range || !isFinite(range) || range<=0) return 1;
+    const rough = range / count;
+    if(!rough || !isFinite(rough) || rough<=0) return 1;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm = rough / mag;
+    const nice = norm<=1.5?1:norm<=3?2:norm<=7?5:10;
+    return nice * mag;
+  };
+
   // Time-based X scale
   const timestamps = data.map(d=>new Date(d.date+'T12:00:00').getTime());
   const tMin = timestamps[0], tMax = timestamps[timestamps.length-1];
@@ -1226,16 +1237,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   // Bar dimensions
   const barW = isBar && data.length > 1 ? Math.max(2, Math.min(16, (iW / data.length) * 0.7)) : 12;
 
-  // Y axis ticks — snap to nice round numbers
-  const niceStep = (range, count) => {
-    if(!range || !isFinite(range) || range<=0) return 1;
-    const rough = range / count;
-    if(!rough || !isFinite(rough) || rough<=0) return 1;
-    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
-    const norm = rough / mag;
-    const nice = norm<=1.5?1:norm<=3?2:norm<=7?5:10;
-    return nice * mag;
-  };
+  // Y axis ticks
   const yStep = niceStep(yRange, 4);
   const yTickStart = Math.ceil(yMin / yStep) * yStep;
   const yTicks = [];
