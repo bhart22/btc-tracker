@@ -309,7 +309,9 @@
 
     /* Cards / Sections */
     .card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:12px; box-shadow:var(--shadow-sm); overflow:hidden; margin-bottom:1.25rem; }
-    .settings-grid .card { margin-bottom:0; }
+    .settings-grid { column-count:2; column-gap:1.25rem; }
+    .settings-grid .card { margin-bottom:1.25rem; break-inside:avoid; display:inline-block; width:100%; }
+    @media(max-width:768px) { .settings-grid { column-count:1; } }
     .card-header { padding:1.125rem 1.5rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:1rem; }
     .card-title { font-size:1rem; font-weight:600; letter-spacing:-.01em; }
     .card-body { padding:1.25rem 1.5rem; }
@@ -2883,7 +2885,7 @@ function App() {
 
         {/* ── SETTINGS ── */}
         {tab==='settings' && (
-          <div className="settings-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(400px,1fr))',gap:'1.25rem',alignItems:'start'}}>
+          <div className="settings-grid">
             {/* Cloud Sync */}
             <div className="card">
               <div className="card-header">
