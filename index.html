@@ -1105,7 +1105,9 @@ function PieChart({ segments, totalBTC, btcPrice }) {
 
 function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel, chartType, overlay }) {
   const [tooltip, setTooltip] = React.useState(null);
+  const [expanded, setExpanded] = React.useState(false);
   const svgRef = React.useRef(null);
+  const expandedSvgRef = React.useRef(null);
   const isBar = chartType === 'bar';
   const hasOverlay = overlay && overlay.data && overlay.data.length > 0;
   const W=480, H=180, PL=58, PR=hasOverlay?52:16, PT=8, PB=32;
@@ -1179,7 +1181,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
       }
       oVal = overlay.data[oc]?.[overlay.dataKey] ?? null;
     }
-    setTooltip({ x: xScale(closest), y: isBar ? yScale(d[dataKey]) : yScale(d[dataKey]), val: d[dataKey], date: d.date, oVal });
+    setTooltip({ x: xScale(closest), y: yScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, isExpanded: false });
   }
 
   const fmtTickDate = d => {
@@ -1187,113 +1189,193 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
     return dt.toLocaleDateString('en-US',{month:'short',year:'2-digit'});
   };
 
+  // Expanded chart dimensions
+  const EW=960, EH=400, EPL=64, EPR=hasOverlay?58:20, EPT=12, EPB=36;
+  const eIW=EW-EPL-EPR, eIH=EH-EPT-EPB;
+  const exScale = i => EPL + ((timestamps[i]-tMin)/tRange)*eIW;
+  const eyScale = v => EPT + eIH - ((v-yMin)/yRange)*eIH;
+  const eoXScale = i => hasOverlay ? EPL + ((oTimestamps[i]-tMin)/tRange)*eIW : 0;
+  const eoYScale = v => EPT + eIH - ((v-oMin)/oRange)*eIH;
+  const eBarW = isBar && data.length > 1 ? Math.max(3, Math.min(24, (eIW / data.length) * 0.7)) : 16;
+  const ePathD = !isBar ? data.map((d,i)=>`${i===0?'M':'L'}${exScale(i).toFixed(1)},${eyScale(d[dataKey]).toFixed(1)}`).join(' ') : '';
+  const eAreaD = !isBar ? ePathD+` L${exScale(data.length-1).toFixed(1)},${(EPT+eIH).toFixed(1)} L${exScale(0).toFixed(1)},${(EPT+eIH).toFixed(1)} Z` : '';
+  const eoPathD = hasOverlay ? overlay.data.map((d,i)=>`${i===0?'M':'L'}${eoXScale(i).toFixed(1)},${eoYScale(d[overlay.dataKey]).toFixed(1)}`).join(' ') : '';
+  const eGradId = 'egrad_'+dataKey.replace(/[^a-z]/g,'');
+  const eyTicks = [0,.125,.25,.375,.5,.625,.75,.875,1].map(t=>yMin+t*yRange);
+  const eoTicks = hasOverlay ? [0,.125,.25,.375,.5,.625,.75,.875,1].map(t=>oMin+t*oRange) : [];
+  // More X ticks for expanded
+  const eXTickCount = 5;
+  const eXTickIdxs = [];
+  for(let t=0;t<eXTickCount;t++) {
+    const targetT = tMin + (t/(eXTickCount-1))*tRange;
+    let best=0, bestD=Infinity;
+    for(let i=0;i<timestamps.length;i++) { const dd=Math.abs(timestamps[i]-targetT); if(dd<bestD){bestD=dd;best=i;} }
+    eXTickIdxs.push(best);
+  }
+
+  function handleExpandedMouseMove(e) {
+    if(!expandedSvgRef.current) return;
+    const rect = expandedSvgRef.current.getBoundingClientRect();
+    const scaleX = EW / rect.width;
+    const mx = (e.clientX - rect.left) * scaleX;
+    const hoverT = tMin + ((mx-EPL)/eIW)*tRange;
+    let closest = 0, closestDist = Infinity;
+    for(let i=0;i<timestamps.length;i++) {
+      const dist = Math.abs(timestamps[i]-hoverT);
+      if(dist<closestDist) { closestDist=dist; closest=i; }
+    }
+    const d = data[closest];
+    let oVal = null;
+    if(hasOverlay) {
+      let oc=0, od=Infinity;
+      for(let i=0;i<oTimestamps.length;i++) {
+        const dist = Math.abs(oTimestamps[i]-timestamps[closest]);
+        if(dist<od) { od=dist; oc=i; }
+      }
+      oVal = overlay.data[oc]?.[overlay.dataKey] ?? null;
+    }
+    setTooltip({ x: exScale(closest), y: eyScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, isExpanded: true });
+  }
+
+  const renderSVGContent = (isExp) => {
+    const cW = isExp?EW:W, cH = isExp?EH:H, cPL = isExp?EPL:PL, cPR = isExp?EPR:PR, cPT = isExp?EPT:PT, cPB = isExp?EPB:PB;
+    const cIW = isExp?eIW:iW, cIH = isExp?eIH:iH;
+    const cXScale = isExp?exScale:xScale, cYScale = isExp?eyScale:yScale;
+    const cOXScale = isExp?eoXScale:oXScale, cOYScale = isExp?eoYScale:oYScale;
+    const cBarW = isExp?eBarW:barW;
+    const cPathD = isExp?ePathD:pathD, cAreaD = isExp?eAreaD:areaD, cOPathD = isExp?eoPathD:oPathD;
+    const cGradId = isExp?eGradId:gradId;
+    const cYTicks = isExp?eyTicks:yTicks;
+    const cOTicks = isExp?eoTicks:oTicks;
+    const cXTickIdxs = isExp?eXTickIdxs:xTickIdxs;
+    const cRef = isExp?expandedSvgRef:svgRef;
+    const cMouseMove = isExp?handleExpandedMouseMove:handleMouseMove;
+    const strokeW = isExp?2.5:2;
+    return (
+      <svg ref={cRef} width="100%" viewBox={`0 0 ${cW} ${cH}`} style={{display:'block',overflow:'visible'}}
+        onMouseMove={cMouseMove} onMouseLeave={()=>setTooltip(null)}>
+        <defs>
+          <linearGradient id={cGradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.18"/>
+            <stop offset="100%" stopColor={color} stopOpacity="0"/>
+          </linearGradient>
+          <clipPath id={'clip_'+cGradId}><rect x={cPL} y={cPT} width={cIW} height={cIH}/></clipPath>
+        </defs>
+        {cYTicks.map((v,i)=>(
+          <line key={i} x1={cPL} x2={cPL+cIW} y1={cYScale(v)} y2={cYScale(v)}
+            stroke="var(--border-color)" strokeWidth="1" strokeDasharray="3 3"/>
+        ))}
+        {refLine!=null && (
+          <>
+            <line x1={cPL} x2={cPL+cIW} y1={cYScale(refLine)} y2={cYScale(refLine)}
+              stroke={refLineColor} strokeWidth="1.5" strokeDasharray="5 4"/>
+            <text x={cPL+cIW-(!hasOverlay?0:40)} y={cYScale(refLine)-6} textAnchor="end" fontSize={isExp?'11':'9'} fill={refLineColor}>{refLineLabel}</text>
+          </>
+        )}
+        {fillGradient && !isBar && <path d={cAreaD} fill={`url(#${cGradId})`} clipPath={`url(#clip_${cGradId})`}/>}
+        {!isBar && <path d={cPathD} fill="none" stroke={color} strokeWidth={strokeW} strokeLinejoin="round" strokeLinecap="round"/>}
+        {isBar && data.map((d,i) => {
+          const x = cXScale(i) - cBarW/2;
+          const barH = ((d[dataKey]-yMin)/yRange)*cIH;
+          return <rect key={i} x={x} y={cPT+cIH-barH} width={cBarW} height={Math.max(0,barH)} fill={color} rx="1" opacity={tooltip && tooltip.isExpanded===!!isExp && Math.abs(cXScale(i)-tooltip.x)<cBarW ? 1 : 0.7}/>;
+        })}
+        {hasOverlay && <path d={cOPathD} fill="none" stroke={overlay.color} strokeWidth={isExp?2:1.5} strokeDasharray="4 3" strokeLinejoin="round" opacity="0.7"/>}
+        {cYTicks.map((v,i)=>(
+          <text key={i} x={cPL-6} y={cYScale(v)+4} textAnchor="end" fontSize={isExp?'11':'10'} fill="var(--text-tertiary)">
+            {formatY(v)}
+          </text>
+        ))}
+        {hasOverlay && cOTicks.map((v,i)=>(
+          <text key={'o'+i} x={cPL+cIW+6} y={cOYScale(v)+4} textAnchor="start" fontSize={isExp?'10':'9'} fill={overlay.color} opacity="0.7">
+            {overlay.formatY(v)}
+          </text>
+        ))}
+        {cXTickIdxs.map(i=>(
+          <text key={i} x={cXScale(i)} y={cH-4} textAnchor="middle" fontSize={isExp?'11':'10'} fill="var(--text-tertiary)">
+            {fmtTickDate(data[i].date)}
+          </text>
+        ))}
+        {tooltip && tooltip.isExpanded===!!isExp && (
+          <>
+            <line x1={tooltip.x} x2={tooltip.x} y1={cPT} y2={cPT+cIH}
+              stroke="var(--border-color)" strokeWidth="1"/>
+            {!isBar && <circle cx={tooltip.x} cy={tooltip.y} r={isExp?5:4} fill={color} stroke="var(--bg-secondary)" strokeWidth="2"/>}
+          </>
+        )}
+      </svg>
+    );
+  };
+
+  const renderTooltipBox = () => tooltip ? (
+    <div style={{
+      marginTop:'.625rem',
+      display:'flex',
+      alignItems:'center',
+      justifyContent:'space-between',
+      gap:'.75rem',
+      borderTop:'1px solid var(--border-color)',
+      paddingTop:'.625rem',
+      fontSize:'.8125rem',
+    }}>
+      <div style={{color:'var(--text-secondary)',fontSize:'.75rem',whiteSpace:'nowrap'}}>{fmtDate(tooltip.date)}</div>
+      <div style={{display:'flex',gap:'.75rem',textAlign:'right'}}>
+        <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600}}>{formatTooltip(tooltip.val)}</div>
+        {hasOverlay && tooltip.oVal !== null && <div style={{color:overlay.color,fontFamily:'JetBrains Mono',fontWeight:600,fontSize:'.75rem'}}>{overlay.formatTooltip(tooltip.oVal)}</div>}
+      </div>
+    </div>
+  ) : null;
+
+  const renderLegend = () => hasOverlay ? (
+    <div style={{display:'flex',gap:'1rem',justifyContent:'center',fontSize:'.6875rem',color:'var(--text-tertiary)',marginTop:'.25rem'}}>
+      <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:color,display:'inline-block',borderRadius:1}}/> {title}</span>
+      <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:overlay.color,display:'inline-block',borderRadius:1,borderTop:'1px dashed '+overlay.color}}/> {overlay.label}</span>
+    </div>
+  ) : null;
+
   return (
     <div className="card">
-      <div className="card-header">
-        <div className="card-title">{title}</div>
-        <div className="chart-subtitle" style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+      <div className="card-header" style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between'}}>
+        <div style={{minWidth:0}}>
+          <div className="card-title">{title}</div>
+          <div className="chart-subtitle" style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+        </div>
+        <button onClick={()=>{setTooltip(null);setExpanded(true);}} title="Expand chart"
+          style={{background:'none',border:'none',cursor:'pointer',padding:'2px',color:'var(--text-tertiary)',flexShrink:0,marginTop:'2px'}}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+        </button>
       </div>
       <div className="card-body" style={{paddingTop:'.25rem',paddingBottom:'.5rem'}}>
-        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:'block',overflow:'visible'}}
-          onMouseMove={handleMouseMove} onMouseLeave={()=>setTooltip(null)}>
-          <defs>
-            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={color} stopOpacity="0.18"/>
-              <stop offset="100%" stopColor={color} stopOpacity="0"/>
-            </linearGradient>
-            <clipPath id={'clip_'+gradId}><rect x={PL} y={PT} width={iW} height={iH}/></clipPath>
-          </defs>
-
-          {/* Grid lines */}
-          {yTicks.map((v,i)=>(
-            <line key={i} x1={PL} x2={PL+iW} y1={yScale(v)} y2={yScale(v)}
-              stroke="var(--border-color)" strokeWidth="1" strokeDasharray="3 3"/>
-          ))}
-
-          {/* Reference line */}
-          {refLine && (
-            <>
-              <line x1={PL} x2={PL+iW} y1={yScale(refLine)} y2={yScale(refLine)}
-                stroke={refLineColor} strokeWidth="1.5" strokeDasharray="5 4"/>
-              <text x={PL+iW-(!hasOverlay?0:40)} y={yScale(refLine)-6} textAnchor="end" fontSize="9" fill={refLineColor}>{refLineLabel}</text>
-            </>
-          )}
-
-          {/* Area fill (line mode) */}
-          {fillGradient && !isBar && <path d={areaD} fill={`url(#${gradId})`} clipPath={`url(#clip_${gradId})`}/>}
-
-          {/* Line (line mode) */}
-          {!isBar && <path d={pathD} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"/>}
-
-          {/* Bars (bar mode) */}
-          {isBar && data.map((d,i) => {
-            const x = xScale(i) - barW/2;
-            const barH = ((d[dataKey]-yMin)/yRange)*iH;
-            return <rect key={i} x={x} y={PT+iH-barH} width={barW} height={Math.max(0,barH)} fill={color} rx="1" opacity={tooltip && Math.abs(xScale(i)-tooltip.x)<barW ? 1 : 0.7}/>;
-          })}
-
-          {/* Overlay line */}
-          {hasOverlay && <path d={oPathD} fill="none" stroke={overlay.color} strokeWidth="1.5" strokeDasharray="4 3" strokeLinejoin="round" opacity="0.7"/>}
-
-          {/* Y axis labels (left) */}
-          {yTicks.map((v,i)=>(
-            <text key={i} x={PL-6} y={yScale(v)+4} textAnchor="end" fontSize="10" fill="var(--text-tertiary)">
-              {formatY(v)}
-            </text>
-          ))}
-
-          {/* Overlay Y axis labels (right) */}
-          {hasOverlay && oTicks.map((v,i)=>(
-            <text key={'o'+i} x={PL+iW+6} y={oYScale(v)+4} textAnchor="start" fontSize="9" fill={overlay.color} opacity="0.7">
-              {overlay.formatY(v)}
-            </text>
-          ))}
-
-          {/* X axis labels */}
-          {xTickIdxs.map(i=>(
-            <text key={i} x={xScale(i)} y={H-4} textAnchor="middle" fontSize="10" fill="var(--text-tertiary)">
-              {fmtTickDate(data[i].date)}
-            </text>
-          ))}
-
-          {/* Tooltip dot + crosshair */}
-          {tooltip && (
-            <>
-              <line x1={tooltip.x} x2={tooltip.x} y1={PT} y2={PT+iH}
-                stroke="var(--border-color)" strokeWidth="1"/>
-              {!isBar && <circle cx={tooltip.x} cy={tooltip.y} r="4" fill={color} stroke="var(--bg-secondary)" strokeWidth="2"/>}
-            </>
-          )}
-        </svg>
-
-        {/* Legend for overlay */}
-        {hasOverlay && (
-          <div style={{display:'flex',gap:'1rem',justifyContent:'center',fontSize:'.6875rem',color:'var(--text-tertiary)',marginTop:'.25rem'}}>
-            <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:color,display:'inline-block',borderRadius:1}}/> {title}</span>
-            <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:overlay.color,display:'inline-block',borderRadius:1,borderTop:'1px dashed '+overlay.color}}/> {overlay.label}</span>
-          </div>
-        )}
-
-        {/* Tooltip box */}
-        {tooltip && (
-          <div style={{
-            marginTop:'.625rem',
-            display:'flex',
-            alignItems:'center',
-            justifyContent:'space-between',
-            gap:'.75rem',
-            borderTop:'1px solid var(--border-color)',
-            paddingTop:'.625rem',
-            fontSize:'.8125rem',
-          }}>
-            <div style={{color:'var(--text-secondary)',fontSize:'.75rem',whiteSpace:'nowrap'}}>{fmtDate(tooltip.date)}</div>
-            <div style={{display:'flex',gap:'.75rem',textAlign:'right'}}>
-              <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600}}>{formatTooltip(tooltip.val)}</div>
-              {hasOverlay && tooltip.oVal !== null && <div style={{color:overlay.color,fontFamily:'JetBrains Mono',fontWeight:600,fontSize:'.75rem'}}>{overlay.formatTooltip(tooltip.oVal)}</div>}
+        {renderSVGContent(false)}
+        {renderLegend()}
+        {!tooltip?.isExpanded && renderTooltipBox()}
+      </div>
+      {expanded && ReactDOM.createPortal(
+        <div style={{position:'fixed',inset:0,zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,.5)',backdropFilter:'blur(4px)'}}
+          onClick={e=>{if(e.target===e.currentTarget){setExpanded(false);setTooltip(null);}}}>
+          <div style={{background:'var(--bg-primary)',borderRadius:'16px',width:'calc(100vw - 2rem)',maxWidth:'960px',maxHeight:'calc(100vh - 2rem)',overflow:'auto',boxShadow:'0 25px 50px rgba(0,0,0,.25)'}}>
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',padding:'1.25rem 1.5rem .5rem'}}>
+              <div>
+                <div style={{fontSize:'1.125rem',fontWeight:700,color:'var(--text-primary)'}}>{title}</div>
+                <div className="chart-subtitle" style={{fontSize:'.875rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>{subtitle}</div>
+              </div>
+              <button onClick={()=>{setExpanded(false);setTooltip(null);}} title="Close"
+                style={{background:'none',border:'none',cursor:'pointer',padding:'4px',color:'var(--text-secondary)',fontSize:'1.25rem',lineHeight:1}}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div style={{padding:'0 1.5rem 1.25rem'}}>
+              {renderSVGContent(true)}
+              {renderLegend()}
+              {tooltip?.isExpanded && renderTooltipBox()}
             </div>
           </div>
-        )}
-      </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
