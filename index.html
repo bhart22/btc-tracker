@@ -1951,7 +1951,7 @@ function App() {
           <div className="sidebar-version">v3.25</div>
         </aside>
 
-        <main className="main">
+        <main className="main" style={settings.bgDots===false?{backgroundImage:'none'}:{}}>
         {/* ── DASHBOARD ── */}
         {tab==='dashboard' && (
           <>
@@ -2594,6 +2594,16 @@ function App() {
                   <select className="form-select" value={settings.defaultTxType||'Buy'} onChange={e=>updateSettings({defaultTxType:e.target.value})} style={{minWidth:140}}>
                     <option>Buy</option><option>Sell</option><option>Transfer</option><option>Reward</option><option>Consolidation</option>
                   </select>
+                </div>
+                <div style={{borderTop:'1px solid var(--border-color)',marginTop:'1rem',paddingTop:'1rem',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+                  <div>
+                    <div style={{fontSize:'.9375rem',fontWeight:600}}>Background Dots</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Show dot pattern on the main background</div>
+                  </div>
+                  <label className="theme-switch">
+                    <input type="checkbox" checked={settings.bgDots!==false} onChange={e=>updateSettings({bgDots:e.target.checked})} />
+                    <span className="theme-slider"></span>
+                  </label>
                 </div>
               </div>
             </div>
