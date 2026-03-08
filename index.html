@@ -906,17 +906,17 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     for(let i=0; i<allDays.length; i++) {
       const [date, price] = allDays[i];
       const pt = { date, price };
+      // 50-day MA
+      if(i >= 49) {
+        let sum = 0;
+        for(let j=i-49; j<=i; j++) sum += allDays[j][1];
+        pt.ma50d = +(sum/50).toFixed(2);
+      }
       // 200-day MA
       if(i >= 199) {
         let sum = 0;
         for(let j=i-199; j<=i; j++) sum += allDays[j][1];
         pt.ma200d = +(sum/200).toFixed(2);
-      }
-      // 50-week MA (350 days)
-      if(i >= 349) {
-        let sum = 0;
-        for(let j=i-349; j<=i; j++) sum += allDays[j][1];
-        pt.ma50w = +(sum/350).toFixed(2);
       }
       // 200-week MA (1400 days)
       if(i >= 1399) {
@@ -1089,8 +1089,8 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatY={fmtCompactUSD}
         formatTooltip={v => '$'+Math.round(v).toLocaleString()}
         lines={[
+          ...((settings.maLines?.ma50d!==false) && maChartData.some(d=>d.ma50d!=null) ? [{ dataKey:'ma50d', color:'#10b981', label:'50D MA', dashed:false, formatTooltip:v=>'50D: $'+Math.round(v).toLocaleString() }] : []),
           ...((settings.maLines?.ma200d!==false) && maChartData.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
-          ...((settings.maLines?.ma50w!==false) && maChartData.some(d=>d.ma50w!=null) ? [{ dataKey:'ma50w', color:'#8b5cf6', label:'50W MA', dashed:false, formatTooltip:v=>'50W: $'+Math.round(v).toLocaleString() }] : []),
           ...((settings.maLines?.ma200w!==false) && maChartData.some(d=>d.ma200w!=null) ? [{ dataKey:'ma200w', color:'#dc2626', label:'200W MA', dashed:true, formatTooltip:v=>'200W: $'+Math.round(v).toLocaleString() }] : []),
         ]}
       />}
@@ -3107,9 +3107,9 @@ function App() {
               <div className="card-body">
                 <div style={{fontSize:'.8125rem',color:'var(--text-secondary)',marginBottom:'1rem'}}>Choose which moving averages appear on the BTC Price chart.</div>
                 {[
-                  { key:'ma200d', label:'200-Day MA', desc:'Short-term trend (blue)', color:'#2563eb' },
-                  { key:'ma50w', label:'50-Week MA', desc:'Medium-term trend (purple)', color:'#8b5cf6' },
-                  { key:'ma200w', label:'200-Week MA', desc:'Long-term trend (red, dashed)', color:'#dc2626' },
+                  { key:'ma50d', label:'50-Day MA', desc:'Short-term trend, golden/death cross signals (green)', color:'#10b981' },
+                  { key:'ma200d', label:'200-Day MA', desc:'Primary bull/bear indicator (blue)', color:'#2563eb' },
+                  { key:'ma200w', label:'200-Week MA', desc:'Long-term cycle floor (red, dashed)', color:'#dc2626' },
                 ].map((ma, i) => (
                   <div key={ma.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.75rem',paddingTop:'.75rem'}:{})}}>
                     <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
