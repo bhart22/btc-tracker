@@ -897,6 +897,44 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       .map(([date, price]) => ({ date, price }));
   }, [historicalPrices, rangeFiltered.chart]);
 
+  // BTC Price with 200D & 200W Moving Averages
+  const maChartData = React.useMemo(() => {
+    if(!historicalPrices || !Object.keys(historicalPrices).length) return [];
+    const allDays = Object.entries(historicalPrices).sort((a,b)=>a[0].localeCompare(b[0]));
+    if(allDays.length < 200) return [];
+    const result = [];
+    for(let i=0; i<allDays.length; i++) {
+      const [date, price] = allDays[i];
+      const pt = { date, price };
+      // 200-day MA
+      if(i >= 199) {
+        let sum = 0;
+        for(let j=i-199; j<=i; j++) sum += allDays[j][1];
+        pt.ma200d = +(sum/200).toFixed(2);
+      }
+      // 200-week MA (1400 days)
+      if(i >= 1399) {
+        let sum = 0;
+        for(let j=i-1399; j<=i; j++) sum += allDays[j][1];
+        pt.ma200w = +(sum/1400).toFixed(2);
+      }
+      result.push(pt);
+    }
+    // Apply range filter
+    const range = settings.chartRange || 'All';
+    if(range === 'All') return result;
+    let cutoff;
+    if(range === 'Custom') cutoff = settings.chartRangeCustom || '2000-01-01';
+    else if(range === 'YTD') cutoff = new Date().getFullYear() + '-01-01';
+    else {
+      const now = new Date();
+      const months = { '3M':3, '6M':6, '1Y':12 };
+      const d = new Date(now.getFullYear(), now.getMonth() - (months[range]||0), now.getDate());
+      cutoff = d.toISOString().slice(0,10);
+    }
+    return result.filter(d => d.date >= cutoff);
+  }, [historicalPrices, settings.chartRange, settings.chartRangeCustom]);
+
   if(!chartData.length) return null;
 
   const fmtCompactUSD = (v) => {
@@ -1036,6 +1074,19 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatY={fmtCompactUSD}
         formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
       />}
+      {!hc.movingAvg && maChartData.length > 0 && <SVGChart
+        data={maChartData}
+        dataKey="price"
+        title="BTC Price & Moving Averages"
+        subtitle={fmtCompactUSD(maChartData[maChartData.length-1]?.price||0)+' current'}
+        color="#f7931a"
+        formatY={fmtCompactUSD}
+        formatTooltip={v => '$'+Math.round(v).toLocaleString()}
+        lines={[
+          ...(maChartData.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
+          ...(maChartData.some(d=>d.ma200w!=null) ? [{ dataKey:'ma200w', color:'#dc2626', label:'200W MA', dashed:true, formatTooltip:v=>'200W: $'+Math.round(v).toLocaleString() }] : []),
+        ]}
+      />}
       {!hc.usdHoldings && historicalPriceLoading && !usdHoldingsData.length && (
         <div className="card">
           <div className="card-header">
@@ -1110,7 +1161,7 @@ function PieChart({ segments, totalBTC, btcPrice }) {
   );
 }
 
-function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel, chartType, overlay }) {
+function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatTooltip, fillGradient, refLine, refLineColor, refLineLabel, chartType, overlay, lines }) {
   const [tooltip, setTooltip] = React.useState(null);
   const [expanded, setExpanded] = React.useState(false);
   const svgRef = React.useRef(null);
@@ -1120,9 +1171,16 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const W=480, H=180, PL=58, PR=hasOverlay?52:16, PT=8, PB=32;
   const iW=W-PL-PR, iH=H-PT-PB;
 
+  const hasLines = lines && lines.length > 0;
   const vals = data.map(d=>d[dataKey]);
-  const minV = isBar ? 0 : Math.min(...vals);
-  const maxV=Math.max(...vals);
+  // Include line values in Y scale
+  let minV = isBar ? 0 : Math.min(...vals);
+  let maxV = Math.max(...vals);
+  if(hasLines) {
+    lines.forEach(ln => {
+      data.forEach(d => { if(d[ln.dataKey]!=null) { minV=Math.min(minV,d[ln.dataKey]); maxV=Math.max(maxV,d[ln.dataKey]); } });
+    });
+  }
 
   // include refLine in Y scale if present
   const yMin = refLine!=null ? Math.min(minV, refLine-(Math.abs(refLine)*0.03||maxV*0.03)) : minV;
@@ -1152,6 +1210,18 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const pathD = !isBar ? data.map((d,i)=>`${i===0?'M':'L'}${xScale(i).toFixed(1)},${yScale(d[dataKey]).toFixed(1)}`).join(' ') : '';
   const areaD = !isBar ? pathD+` L${xScale(data.length-1).toFixed(1)},${(PT+iH).toFixed(1)} L${xScale(0).toFixed(1)},${(PT+iH).toFixed(1)} Z` : '';
   const oPathD = hasOverlay ? overlay.data.map((d,i)=>`${i===0?'M':'L'}${oXScale(i).toFixed(1)},${oYScale(d[overlay.dataKey]).toFixed(1)}`).join(' ') : '';
+
+  // Additional same-scale lines
+  const buildLinePath = (ln, xsFn, ysFn) => {
+    let started = false;
+    return data.map((d,i) => {
+      if(d[ln.dataKey]==null) return '';
+      const cmd = started ? 'L' : 'M';
+      started = true;
+      return `${cmd}${xsFn(i).toFixed(1)},${ysFn(d[ln.dataKey]).toFixed(1)}`;
+    }).join(' ');
+  };
+  const linePaths = hasLines ? lines.map(ln => buildLinePath(ln, xScale, yScale)) : [];
 
   // Bar dimensions
   const barW = isBar && data.length > 1 ? Math.max(2, Math.min(16, (iW / data.length) * 0.7)) : 12;
@@ -1204,7 +1274,8 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
       }
       oVal = overlay.data[oc]?.[overlay.dataKey] ?? null;
     }
-    setTooltip({ x: xScale(closest), y: yScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, isExpanded: false });
+    const lineVals = hasLines ? lines.map(ln => d[ln.dataKey] ?? null) : [];
+    setTooltip({ x: xScale(closest), y: yScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, lineVals, isExpanded: false });
   }
 
   const fmtTickDate = d => {
@@ -1263,8 +1334,11 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
       }
       oVal = overlay.data[oc]?.[overlay.dataKey] ?? null;
     }
-    setTooltip({ x: exScale(closest), y: eyScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, isExpanded: true });
+    const lineVals = hasLines ? lines.map(ln => d[ln.dataKey] ?? null) : [];
+    setTooltip({ x: exScale(closest), y: eyScale(d[dataKey]), val: d[dataKey], date: d.date, oVal, lineVals, isExpanded: true });
   }
+
+  const eLinePaths = hasLines ? lines.map(ln => buildLinePath(ln, exScale, eyScale)) : [];
 
   const renderSVGContent = (isExp) => {
     const cW = isExp?EW:W, cH = isExp?EH:H, cPL = isExp?EPL:PL, cPR = isExp?EPR:PR, cPT = isExp?EPT:PT, cPB = isExp?EPB:PB;
@@ -1274,6 +1348,7 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
     const cBarW = isExp?eBarW:barW;
     const cPathD = isExp?ePathD:pathD, cAreaD = isExp?eAreaD:areaD, cOPathD = isExp?eoPathD:oPathD;
     const cGradId = isExp?eGradId:gradId;
+    const cLinePaths = isExp?eLinePaths:linePaths;
     const cYTicks = isExp?eyTicks:yTicks;
     const cOTicks = isExp?eoTicks:oTicks;
     const cXTickIdxs = isExp?eXTickIdxs:xTickIdxs;
@@ -1309,6 +1384,10 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
           return <rect key={i} x={x} y={cPT+cIH-barH} width={cBarW} height={Math.max(0,barH)} fill={color} rx="1" opacity={tooltip && tooltip.isExpanded===!!isExp && Math.abs(cXScale(i)-tooltip.x)<cBarW ? 1 : 0.7}/>;
         })}
         {hasOverlay && <path d={cOPathD} fill="none" stroke={overlay.color} strokeWidth={isExp?2:1.5} strokeDasharray="4 3" strokeLinejoin="round" opacity="0.7"/>}
+        {hasLines && lines.map((ln,li) => (
+          <path key={'ln'+li} d={cLinePaths[li]} fill="none" stroke={ln.color} strokeWidth={isExp?2:1.5}
+            strokeDasharray={ln.dashed?"6 4":undefined} strokeLinejoin="round" opacity="0.8"/>
+        ))}
         {cYTicks.map((v,i)=>(
           <text key={i} x={cPL-6} y={cYScale(v)+4} textAnchor="end" fontSize={isExp?'11':'10'} fill="var(--text-tertiary)">
             {formatY(v)}
@@ -1347,17 +1426,23 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
       fontSize:'.8125rem',
     }}>
       <div style={{color:'var(--text-secondary)',fontSize:'.75rem',whiteSpace:'nowrap'}}>{fmtDate(tooltip.date)}</div>
-      <div style={{display:'flex',gap:'.75rem',textAlign:'right'}}>
+      <div style={{display:'flex',gap:'.75rem',textAlign:'right',flexWrap:'wrap',justifyContent:'flex-end'}}>
         <div style={{color:color,fontFamily:'JetBrains Mono',fontWeight:600}}>{formatTooltip(tooltip.val)}</div>
         {hasOverlay && tooltip.oVal !== null && <div style={{color:overlay.color,fontFamily:'JetBrains Mono',fontWeight:600,fontSize:'.75rem'}}>{overlay.formatTooltip(tooltip.oVal)}</div>}
+        {hasLines && tooltip.lineVals && tooltip.lineVals.map((v,i) => v!=null ? (
+          <div key={i} style={{color:lines[i].color,fontFamily:'JetBrains Mono',fontWeight:600,fontSize:'.75rem'}}>{lines[i].formatTooltip?lines[i].formatTooltip(v):formatTooltip(v)}</div>
+        ) : null)}
       </div>
     </div>
   ) : null;
 
-  const renderLegend = () => hasOverlay ? (
-    <div style={{display:'flex',gap:'1rem',justifyContent:'center',fontSize:'.6875rem',color:'var(--text-tertiary)',marginTop:'.25rem'}}>
+  const renderLegend = () => (hasOverlay || hasLines) ? (
+    <div style={{display:'flex',gap:'1rem',justifyContent:'center',fontSize:'.6875rem',color:'var(--text-tertiary)',marginTop:'.25rem',flexWrap:'wrap'}}>
       <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:color,display:'inline-block',borderRadius:1}}/> {title}</span>
-      <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:overlay.color,display:'inline-block',borderRadius:1,borderTop:'1px dashed '+overlay.color}}/> {overlay.label}</span>
+      {hasOverlay && <span style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:overlay.color,display:'inline-block',borderRadius:1,borderTop:'1px dashed '+overlay.color}}/> {overlay.label}</span>}
+      {hasLines && lines.map((ln,i) => (
+        <span key={i} style={{display:'flex',alignItems:'center',gap:'.25rem'}}><span style={{width:12,height:2,background:ln.color,display:'inline-block',borderRadius:1,...(ln.dashed?{borderTop:'1px dashed '+ln.color,background:'transparent'}:{})}}/> {ln.label}</span>
+      ))}
     </div>
   ) : null;
 
@@ -2985,6 +3070,7 @@ function App() {
                   { key:'feeBurn', label:'Cumulative Fee Burn', desc:'Total BTC lost to network and exchange fees' },
                   { key:'rewards', label:'Reward Income', desc:'Cumulative staking and earn rewards' },
                   { key:'monthly', label:'Monthly Summary', desc:'Monthly buy volume as bar chart' },
+                  { key:'movingAvg', label:'BTC Price & Moving Averages', desc:'BTC price with 200-day and 200-week MAs' },
                 ].map((chart, i) => (
                   <div key={chart.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',...(i>0?{borderTop:'1px solid var(--border-color)',marginTop:'.75rem',paddingTop:'.75rem'}:{})}}>
                     <div>
