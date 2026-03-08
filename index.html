@@ -380,6 +380,26 @@
     .wallet-delta { font-size:.75rem; margin-top:.375rem; }
     .wallet-address { font-size:.6875rem; color:var(--text-tertiary); font-family:'JetBrains Mono',monospace; margin-top:.5rem; word-break:break-all; }
 
+    /* Donut chart */
+    .donut-chart-container { display:flex; flex-direction:column; align-items:center; gap:1.25rem; padding:1rem 0; }
+    .donut-chart-wrap { position:relative; width:200px; height:200px; }
+    .donut-chart-center { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); text-align:center; pointer-events:none; }
+    .donut-chart-center .donut-total-btc { font-size:1.125rem; font-weight:700; font-family:'JetBrains Mono',monospace; color:var(--bitcoin-orange); }
+    .donut-chart-center .donut-total-usd { font-size:.75rem; color:var(--text-secondary); font-family:'JetBrains Mono',monospace; margin-top:.125rem; }
+    .donut-segment { transition:opacity .15s, filter .15s; cursor:pointer; }
+    .donut-segment:hover { opacity:.85; filter:brightness(1.1); }
+    .donut-legend { display:flex; flex-wrap:wrap; justify-content:center; gap:.5rem .875rem; }
+    .donut-legend-item { display:flex; align-items:center; gap:.375rem; font-size:.75rem; color:var(--text-secondary); cursor:pointer; }
+    .donut-legend-item:hover { color:var(--text-primary); }
+    .donut-legend-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+    .donut-tooltip { position:fixed; pointer-events:none; z-index:1000; background:var(--bg-primary); border:1px solid var(--border-color); border-radius:10px; padding:.75rem 1rem; box-shadow:0 8px 24px rgba(0,0,0,.15); min-width:180px; }
+    .donut-tooltip .dt-name { font-size:.875rem; font-weight:600; margin-bottom:.25rem; }
+    .donut-tooltip .dt-type { font-size:.625rem; font-weight:600; text-transform:uppercase; letter-spacing:.06em; padding:.1rem .4rem; border-radius:3px; background:var(--bitcoin-light); color:var(--bitcoin-orange); display:inline-block; margin-bottom:.5rem; }
+    .donut-tooltip .dt-row { display:flex; justify-content:space-between; gap:1rem; font-size:.8125rem; padding:.125rem 0; }
+    .donut-tooltip .dt-label { color:var(--text-tertiary); }
+    .donut-tooltip .dt-value { font-family:'JetBrains Mono',monospace; font-weight:600; }
+    .donut-tooltip .dt-pct { color:var(--bitcoin-orange); }
+
     /* Audit / reconcile */
     .audit-row { display:flex; justify-content:space-between; align-items:center; padding:.625rem 0; border-bottom:1px solid var(--border-color); font-size:.875rem; }
     .audit-row:last-child { border-bottom:none; }
@@ -665,10 +685,9 @@ const NAV_ITEMS = [
 ];
 
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
-function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading }) {
+function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading, settings, updateSettings }) {
   const { chartData, holdingsHistory } = React.useMemo(() => {
     const sorted = transactions
-      .filter(tx => !tx.excludeStats)
       .map(tx => ({ ...tx, normalizedDate: normalizeDate(tx.date) }))
       .filter(tx => tx.normalizedDate)
       .sort((a,b) => a.normalizedDate.localeCompare(b.normalizedDate));
@@ -688,19 +707,22 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       const w1 = tx.wallet;
       const w2 = tx.wallet2;
 
-      // Always track BTC balance
+      // Always track BTC balance (all transactions, including excluded)
       if(tx.type==='Buy'||tx.type==='Reward') { runningBTC+=amt; }
       else if(tx.type==='Sell') { runningBTC-=amt; }
       else if(tx.type==='Transfer') { runningBTC-=fee; }
       else if(tx.type==='Consolidation') { runningBTC-=fee; }
 
-      if(tx.type==='Buy') { runningBTCForCost+=amt; totalCost+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee; }
-      else if(tx.type==='Reward') { runningBTCForCost+=amt; }
-      else if(tx.type==='Sell') {
-        const ratio = amt/Math.max(runningBTCForCost,0.00000001);
-        totalCost-=totalCost*ratio; runningBTCForCost-=amt;
-      } else if(tx.type==='Transfer') { runningBTCForCost-=fee; }
-      else if(tx.type==='Consolidation') { runningBTCForCost-=fee; }
+      // Cost basis — only non-excluded transactions
+      if(!tx.excludeStats) {
+        if(tx.type==='Buy') { runningBTCForCost+=amt; totalCost+=(tx.totalUsd ? parseFloat(tx.totalUsd) : (amt*price))+fee; }
+        else if(tx.type==='Reward') { runningBTCForCost+=amt; }
+        else if(tx.type==='Sell') {
+          const ratio = amt/Math.max(runningBTCForCost,0.00000001);
+          totalCost-=totalCost*ratio; runningBTCForCost-=amt;
+        } else if(tx.type==='Transfer') { runningBTCForCost-=fee; }
+        else if(tx.type==='Consolidation') { runningBTCForCost-=fee; }
+      }
 
       // Track included-transaction holdings history for dashboard value charts.
       ensureWallet(w1);
@@ -737,13 +759,34 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     return { chartData: points, holdingsHistory: holdingsPoints };
   }, [transactions, wallets]);
 
-  const costData = React.useMemo(() => chartData.filter(d=>d.avgCost!==null), [chartData]);
+  // Time-range filtering
+  const rangeFiltered = React.useMemo(() => {
+    const range = settings.chartRange || 'All';
+    if(range === 'All') return { chart: chartData, holdings: holdingsHistory };
+    let cutoff;
+    if(range === 'Custom') {
+      cutoff = settings.chartRangeCustom || '2000-01-01';
+    } else if(range === 'YTD') {
+      cutoff = new Date().getFullYear() + '-01-01';
+    } else {
+      const now = new Date();
+      const months = { '3M':3, '6M':6, '1Y':12 };
+      const d = new Date(now.getFullYear(), now.getMonth() - (months[range]||0), now.getDate());
+      cutoff = d.toISOString().slice(0,10);
+    }
+    return {
+      chart: chartData.filter(d => d.date >= cutoff),
+      holdings: holdingsHistory.filter(d => d.date >= cutoff),
+    };
+  }, [chartData, holdingsHistory, settings.chartRange, settings.chartRangeCustom]);
+
+  const costData = React.useMemo(() => rangeFiltered.chart.filter(d=>d.avgCost!==null), [rangeFiltered.chart]);
   const usdHoldingsData = React.useMemo(() => {
-    return holdingsHistory.map(d => ({
+    return rangeFiltered.holdings.map(d => ({
       date: d.date,
       holdingsUsd: historicalPrices[d.date]!==undefined ? +(d.holdingsBtc * historicalPrices[d.date]).toFixed(2) : null,
     })).filter(d => d.holdingsUsd!==null);
-  }, [holdingsHistory, historicalPrices]);
+  }, [rangeFiltered.holdings, historicalPrices]);
 
   if(!chartData.length) return null;
 
@@ -754,21 +797,43 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     return '$'+Math.round(v);
   };
 
+  const visibleChart = rangeFiltered.chart;
+  const chartRangeVal = settings.chartRange || 'All';
+
   return (
+    <>
+    <div style={{display:'flex',gap:'.375rem',marginBottom:'.75rem',alignItems:'center',flexWrap:'wrap'}}>
+      {['3M','6M','1Y','YTD','All','Custom'].map(r => (
+        <button key={r} onClick={() => updateSettings({ chartRange: r })}
+          className={chartRangeVal===r ? 'btn btn-primary' : 'btn btn-secondary'}
+          style={{padding:'.25rem .75rem',fontSize:'.75rem'}}>
+          {r}
+        </button>
+      ))}
+      {chartRangeVal === 'Custom' && (
+        <input type="date"
+          value={settings.chartRangeCustom || ''}
+          onChange={e => updateSettings({ chartRangeCustom: e.target.value })}
+          style={{padding:'.25rem .5rem',fontSize:'.75rem',borderRadius:'8px',
+            border:'1px solid var(--border-color)',background:'var(--bg-secondary)',
+            color:'var(--text-primary)',fontFamily:'inherit'}}
+        />
+      )}
+    </div>
     <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
-      <SVGChart
-        data={chartData}
+      {visibleChart.length > 0 && <SVGChart
+        data={visibleChart}
         dataKey="btc"
         title="Accumulated BTC"
-        subtitle={chartData[chartData.length-1]?.btc.toFixed(8)+' BTC total'}
+        subtitle={visibleChart[visibleChart.length-1]?.btc.toFixed(8)+' BTC total'}
         color="#f7931a"
-        formatY={v=>v.toFixed(8)}
+        formatY={v=>v.toFixed(2)}
         formatTooltip={(v)=>{
           const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : '';
           return v.toFixed(8)+' BTC'+usd;
         }}
         fillGradient={true}
-      />
+      />}
       {costData.length > 1 && <SVGChart
         data={costData}
         dataKey="avgCost"
@@ -803,6 +868,56 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         </div>
       )}
     </div>
+    </>
+  );
+}
+
+function DonutChart({ segments, totalBTC, btcPrice, R, STROKE, C }) {
+  const [hover, setHover] = React.useState(null);
+  const [mouse, setMouse] = React.useState({x:0,y:0});
+  const SIZE = (R + STROKE/2 + 2) * 2;
+  const CENTER = SIZE / 2;
+  const handleMove = React.useCallback((e) => setMouse({x:e.clientX,y:e.clientY}), []);
+  return (
+    <div className="donut-chart-container" onMouseMove={handleMove}>
+      <div className="donut-chart-wrap" style={{width:SIZE,height:SIZE}}>
+        <svg viewBox={`0 0 ${SIZE} ${SIZE}`} width={SIZE} height={SIZE}>
+          {segments.map((seg,i) => (
+            <circle key={seg.name} cx={CENTER} cy={CENTER} r={R}
+              fill="none" stroke={seg.color} strokeWidth={STROKE}
+              strokeDasharray={seg.dashArray} strokeDashoffset={seg.dashOffset}
+              className="donut-segment"
+              style={{transform:'rotate(-90deg)',transformOrigin:'center', opacity:hover!==null&&hover!==i?.4:1}}
+              onMouseEnter={()=>setHover(i)} onMouseLeave={()=>setHover(null)}
+            />
+          ))}
+        </svg>
+        <div className="donut-chart-center">
+          <div className="donut-total-btc">{fmtBTC(totalBTC)}</div>
+          {btcPrice && <div className="donut-total-usd">{fmtUSD(totalBTC*btcPrice)}</div>}
+        </div>
+      </div>
+      <div className="donut-legend">
+        {segments.map((seg,i) => (
+          <div key={seg.name} className="donut-legend-item"
+            onMouseEnter={()=>setHover(i)} onMouseLeave={()=>setHover(null)}
+            style={{fontWeight:hover===i?600:'normal'}}>
+            <span className="donut-legend-dot" style={{background:seg.color}} />
+            {seg.name}
+          </div>
+        ))}
+      </div>
+      {hover !== null && segments[hover] && ReactDOM.createPortal(
+        <div className="donut-tooltip" style={{left:mouse.x+12,top:mouse.y-10}}>
+          <div className="dt-name">{segments[hover].name}</div>
+          <div className="dt-type">{segments[hover].type}</div>
+          <div className="dt-row"><span className="dt-label">BTC</span><span className="dt-value">{fmtBTC(segments[hover].amount)}</span></div>
+          {btcPrice && <div className="dt-row"><span className="dt-label">USD</span><span className="dt-value">{fmtUSD(segments[hover].amount*btcPrice)}</span></div>}
+          <div className="dt-row"><span className="dt-label">Share</span><span className="dt-value dt-pct">{(segments[hover].pct*100).toFixed(1)}%</span></div>
+        </div>,
+        document.body
+      )}
+    </div>
   );
 }
 
@@ -821,7 +936,11 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
   const yMax = refLine ? Math.max(maxV, refLine*1.03) : maxV;
   const yRange = yMax-yMin || 1;
 
-  const xScale = i => PL + (i/(data.length-1||1))*iW;
+  // Time-based X scale — evenly distributes dates across the chart width
+  const timestamps = data.map(d=>new Date(d.date+'T12:00:00').getTime());
+  const tMin = timestamps[0], tMax = timestamps[timestamps.length-1];
+  const tRange = tMax - tMin || 1;
+  const xScale = i => PL + ((timestamps[i]-tMin)/tRange)*iW;
   const yScale = v => PT + iH - ((v-yMin)/yRange)*iH;
 
   const pathD = data.map((d,i)=>`${i===0?'M':'L'}${xScale(i).toFixed(1)},${yScale(d[dataKey]).toFixed(1)}`).join(' ');
@@ -829,8 +948,15 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
 
   // Y axis ticks
   const yTicks = [0,.25,.5,.75,1].map(t=>yMin+t*yRange);
-  // X axis ticks — first, middle, last
-  const xTickIdxs = [0, Math.floor((data.length-1)/2), data.length-1];
+  // X axis ticks — evenly spaced by time (first, middle, last)
+  const xTickIdxs = [0, 0, data.length-1];
+  // Find data point closest to temporal midpoint
+  const midT = tMin + tRange/2;
+  let midDist = Infinity;
+  for(let i=0;i<timestamps.length;i++) {
+    const d = Math.abs(timestamps[i]-midT);
+    if(d<midDist) { midDist=d; xTickIdxs[1]=i; }
+  }
 
   const gradId = 'grad_'+dataKey.replace(/[^a-z]/g,'');
 
@@ -839,10 +965,15 @@ function SVGChart({ data, dataKey, title, subtitle, color, formatY, formatToolti
     const rect = svgRef.current.getBoundingClientRect();
     const scaleX = W / rect.width;
     const mx = (e.clientX - rect.left) * scaleX;
-    const idx = Math.round(((mx-PL)/iW)*(data.length-1));
-    const clamped = Math.max(0, Math.min(data.length-1, idx));
-    const d = data[clamped];
-    setTooltip({ x: xScale(clamped), y: yScale(d[dataKey]), val: d[dataKey], date: d.date });
+    // Find nearest data point by time-based X position
+    const hoverT = tMin + ((mx-PL)/iW)*tRange;
+    let closest = 0, closestDist = Infinity;
+    for(let i=0;i<timestamps.length;i++) {
+      const dist = Math.abs(timestamps[i]-hoverT);
+      if(dist<closestDist) { closestDist=dist; closest=i; }
+    }
+    const d = data[closest];
+    setTooltip({ x: xScale(closest), y: yScale(d[dataKey]), val: d[dataKey], date: d.date });
   }
 
   const fmtTickDate = d => {
@@ -994,7 +1125,6 @@ function App() {
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('btc-sidebar-collapsed') === 'true');
   const [moreStats, setMoreStats] = useState(false);
-  const [walletsOpen, setWalletsOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [showWalletModal, setShowWalletModal] = useState(false);
@@ -1882,38 +2012,38 @@ function App() {
               <span style={{display:'inline-flex',transform:moreStats?'rotate(180deg)':'none',transition:'transform .2s'}}>{Icon.ChevronDown({width:16,height:16})}</span>
             </button>
 
-            {/* Wallet summary */}
-            <div className="card">
-              <div className="card-header" style={{cursor:'pointer'}} onClick={()=>setWalletsOpen(o=>!o)}>
-                <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
-                  <span style={{display:'inline-flex',transform:walletsOpen?'rotate(180deg)':'none',transition:'transform .2s'}}>{Icon.ChevronDown({width:16,height:16})}</span>
-                  <div className="card-title">Holdings by Wallet</div>
+            {/* Wallet holdings donut chart */}
+            {(() => {
+              const DONUT_COLORS = ['#f7931a','#3b82f6','#10b981','#8b5cf6','#ef4444','#f59e0b','#06b6d4','#ec4899','#84cc16','#6366f1'];
+              const walletData = activeWallets
+                .map(w => ({ name:w.name, type:w.type, amount:walletHoldings[w.name]||0 }))
+                .filter(d => d.amount > 0.00000001)
+                .sort((a,b) => b.amount - a.amount);
+              const totalBTC = walletData.reduce((s,d) => s+d.amount, 0);
+              if(!walletData.length) return null;
+              const R = 80, STROKE = 32, C = 2 * Math.PI * R;
+              let offset = 0;
+              const segments = walletData.map((d,i) => {
+                const pct = d.amount / totalBTC;
+                const seg = { ...d, pct, color:DONUT_COLORS[i % DONUT_COLORS.length], dashArray:`${pct*C} ${C}`, dashOffset:-offset };
+                offset += pct * C;
+                return seg;
+              });
+              return (
+                <div className="card">
+                  <div className="card-header">
+                    <div className="card-title">Holdings by Wallet</div>
+                    <button className="btn btn-secondary btn-sm" onClick={()=>setTab('wallets')}>Manage Wallets →</button>
+                  </div>
+                  <div className="card-body">
+                    <DonutChart segments={segments} totalBTC={totalBTC} btcPrice={btcPrice} R={R} STROKE={STROKE} C={C} />
+                  </div>
                 </div>
-                <button className="btn btn-secondary btn-sm" onClick={e=>{e.stopPropagation();setTab('wallets');}}>Manage Wallets →</button>
-              </div>
-              {walletsOpen && <div className="card-body">
-                <div className="wallet-grid">
-                  {activeWallets.map(w=>{
-                    const amount = walletHoldings[w.name]||0;
-                    if(amount <= 0.00000001) return null;
-                    const usdVal = btcPrice ? amount*btcPrice : null;
-                    return (
-                      <div key={w.name} className="wallet-card">
-                        <div className="wallet-card-header">
-                          <div className="wallet-name">{w.name}</div>
-                          <span className="wallet-type-badge">{w.type}</span>
-                        </div>
-                        <div className="wallet-btc">{fmtBTC(amount)} BTC</div>
-                        {usdVal && <div className="wallet-usd">{fmtUSD(usdVal)}</div>}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>}
-            </div>
+              );
+            })()}
 
             {/* ── Charts ── */}
-            <DashboardCharts transactions={transactions} wallets={wallets} btcPrice={btcPrice} historicalPrices={historicalPrices} historicalPriceLoading={historicalPriceLoading} />
+            <DashboardCharts transactions={transactions} wallets={wallets} btcPrice={btcPrice} historicalPrices={historicalPrices} historicalPriceLoading={historicalPriceLoading} settings={settings} updateSettings={updateSettings} />
           </>
         )}
 
