@@ -755,8 +755,9 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         }
       }
 
-      // Fee burn tracking (all tx types with fees)
-      if(fee > 0 && !tx.excludeStats) {
+      // Fee burn tracking — only Transfer/Consolidation fees (actual BTC lost to network)
+      // Buy/Sell fees are USD-denominated exchange fees, not BTC burn
+      if(fee > 0 && !tx.excludeStats && (tx.type==='Transfer'||tx.type==='Consolidation')) {
         cumulativeFees += fee;
         const lastFee = feePoints[feePoints.length-1];
         if(lastFee && lastFee.date===tx.normalizedDate) feePoints[feePoints.length-1] = { date:tx.normalizedDate, fees:+cumulativeFees.toFixed(8) };
@@ -771,11 +772,10 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         else rewardPoints.push({ date:tx.normalizedDate, rewards:+cumulativeRewards.toFixed(8) });
       }
 
-      // P&L tracking (realized from sells + unrealized from current holdings)
+      // P&L tracking — record realized P&L and cost snapshot at each transaction date
       if(!tx.excludeStats && (tx.type==='Buy'||tx.type==='Sell'||tx.type==='Reward')) {
-        const unrealized = runningBTCForCost > 0.00000001 ? runningBTCForCost * price - totalCost : 0;
         const lastPL = plPoints[plPoints.length-1];
-        const plPt = { date:tx.normalizedDate, realized:+realizedPL.toFixed(2), unrealized:+unrealized.toFixed(2), totalPL:+(realizedPL+unrealized).toFixed(2) };
+        const plPt = { date:tx.normalizedDate, realized:+realizedPL.toFixed(2), btcHeld:+runningBTCForCost.toFixed(8), costBasis:+totalCost.toFixed(2) };
         if(lastPL && lastPL.date===tx.normalizedDate) plPoints[plPoints.length-1] = plPt;
         else plPoints.push(plPt);
       }
@@ -863,6 +863,26 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       holdingsUsd: historicalPrices[d.date]!==undefined ? +(d.holdingsBtc * historicalPrices[d.date]).toFixed(2) : null,
     })).filter(d => d.holdingsUsd!==null);
   }, [rangeFiltered.holdings, historicalPrices]);
+
+  // P&L chart data — compute unrealized using historical prices for accuracy
+  const plChartData = React.useMemo(() => {
+    if(!rangeFiltered.pl.length || !Object.keys(historicalPrices).length) return [];
+    // For each date with a historical price, interpolate the realized/cost/holdings from plPoints
+    const plPts = rangeFiltered.pl;
+    const sortedDates = Object.keys(historicalPrices).filter(d => {
+      return plPts.length && d >= plPts[0].date && d <= (plPts[plPts.length-1].date > new Date().toISOString().slice(0,10) ? plPts[plPts.length-1].date : new Date().toISOString().slice(0,10));
+    }).sort();
+    if(!sortedDates.length) return [];
+    let pi = 0;
+    return sortedDates.map(date => {
+      while(pi < plPts.length-1 && plPts[pi+1].date <= date) pi++;
+      const snap = plPts[pi];
+      if(!snap || date < snap.date) return null;
+      const mktPrice = historicalPrices[date];
+      const unrealized = snap.btcHeld > 0.00000001 ? +(snap.btcHeld * mktPrice - snap.costBasis).toFixed(2) : 0;
+      return { date, realized: snap.realized, unrealized, totalPL: +(snap.realized + unrealized).toFixed(2) };
+    }).filter(Boolean);
+  }, [rangeFiltered.pl, historicalPrices]);
 
   // Price overlay data for Accumulated BTC chart
   const priceOverlayData = React.useMemo(() => {
@@ -964,12 +984,12 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         formatY={fmtCompactUSD}
         formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
       />}
-      {!hc.pl && rangeFiltered.pl.length > 1 && <SVGChart
-        data={rangeFiltered.pl}
+      {!hc.pl && plChartData.length > 1 && <SVGChart
+        data={plChartData}
         dataKey="totalPL"
         title="Realized vs Unrealized P&L"
-        subtitle={(rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL||0)+' total P&L'}
-        color={rangeFiltered.pl[rangeFiltered.pl.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
+        subtitle={(plChartData[plChartData.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(plChartData[plChartData.length-1]?.totalPL||0)+' total P&L'}
+        color={plChartData[plChartData.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
         formatY={fmtCompactUSD}
         formatTooltip={v => (v>=0?'+':'')+fmtCompactUSD(v)}
         refLine={0}
