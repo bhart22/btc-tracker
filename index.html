@@ -1186,9 +1186,9 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
               key={wallet.id}
               className={`wallet-chip ${walletFilterSelection.includes(wallet.name) ? 'active' : ''}`}
               onClick={() => toggleWalletFilter(wallet.name)}
+              title={wallet.type}
             >
               <span>{wallet.name}</span>
-              <span style={{color:'var(--text-tertiary)'}}>{wallet.type}</span>
             </button>
           ))}
         </div>
@@ -2424,7 +2424,7 @@ function App() {
   // ─── Export Full Backup JSON ──────────────────────────────────────────────
   const exportNativeCSV = () => {
     const payload = {
-      version: '3.26',
+      version: '3.27',
       exportedAt: new Date().toISOString(),
       transactions,
       wallets,
@@ -2630,7 +2630,7 @@ function App() {
         <button onClick={()=>{setShowTipJar(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%'}}>
           {Icon.Heart({width:16,height:16})} Send a tip
         </button>
-        <div className="sidebar-version">v3.26</div>
+        <div className="sidebar-version">v3.27</div>
       </nav>
 
       <div className="app-body">
@@ -2656,7 +2656,7 @@ function App() {
           <button onClick={()=>setShowTipJar(true)} title="Send a tip" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:sidebarCollapsed?'center':'flex-start'}}>
             {Icon.Heart({width:16,height:16})} {!sidebarCollapsed && 'Send a tip'}
           </button>
-          <div className="sidebar-version">v3.26</div>
+          <div className="sidebar-version">v3.27</div>
         </aside>
 
         <main className="main" style={effectiveSettings.bgDots===false?{backgroundImage:'none'}:{}}>
@@ -2795,6 +2795,9 @@ function App() {
                 <option value="All">All Years</option>
                 {years.map(y=><option key={y}>{y}</option>)}
               </select>
+              <button className="btn btn-secondary btn-sm" onClick={()=>{setSearch('');setFilterType('All');setFilterWallet('All');setFilterYear('All');setPage(1);}}>
+                Clear Filters
+              </button>
               <span className="filter-count">{filtered.length} of {transactions.length}</span>
             </div>
 
