@@ -2699,10 +2699,12 @@ function App() {
             })()}
             <div className={`stats-grid ${moreStats?'stats-expanded':''}`}>
               <div className="stat-card">
-                <div className="stat-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
-                  Holdings
+                <div className="stat-label" style={{display:'flex',flexDirection:'column',alignItems:'flex-start',gap:'.375rem'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'.375rem'}}>
+                    <span>Holdings</span>
+                    <InfoTip text="Holdings only include active (non-archived) wallets. Archived wallets still contribute to cost basis and P&L calculations. Delete a wallet entirely to remove it from all stats." />
+                  </div>
                   {hasDashboardWalletFilter && <span className="scope-badge">Selected wallets</span>}
-                  <InfoTip text="Holdings only include active (non-archived) wallets. Archived wallets still contribute to cost basis and P&L calculations. Delete a wallet entirely to remove it from all stats." />
                 </div>
                 <div className="stat-value btc">{fmtBTC(dashboardTrackedHoldings)}</div>
                 <div className="stat-sub">BTC{btcPrice?` · ${fmtUSD(dashboardTrackedHoldings*(btcPrice||0))}`:''}</div>
