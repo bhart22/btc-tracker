@@ -706,6 +706,55 @@ const NAV_ITEMS = [
 
 const DEFAULT_CHART_ORDER = ['movingAvg','accumulatedBtc','costBasis','usdHoldings','dca','pl','feeBurn','rewards','monthly'];
 
+function buildMovingAverageSeries(allDays) {
+  if(!allDays.length) return [];
+  const result = [];
+  let avgGain = 0;
+  let avgLoss = 0;
+  for(let i = 0; i < allDays.length; i++) {
+    const [date, price] = allDays[i];
+    const pt = { date, price };
+    if(i >= 49) {
+      let sum = 0;
+      for(let j = i - 49; j <= i; j++) sum += allDays[j][1];
+      pt.ma50d = +(sum / 50).toFixed(2);
+    }
+    if(i >= 199) {
+      let sum = 0;
+      for(let j = i - 199; j <= i; j++) sum += allDays[j][1];
+      pt.ma200d = +(sum / 200).toFixed(2);
+    }
+    if(i >= 1399) {
+      let sum = 0;
+      for(let j = i - 1399; j <= i; j++) sum += allDays[j][1];
+      pt.ma200w = +(sum / 1400).toFixed(2);
+    }
+    if(i === 14) {
+      let gains = 0;
+      let losses = 0;
+      for(let j = 1; j <= 14; j++) {
+        const delta = allDays[j][1] - allDays[j-1][1];
+        if(delta >= 0) gains += delta;
+        else losses += Math.abs(delta);
+      }
+      avgGain = gains / 14;
+      avgLoss = losses / 14;
+      const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+      pt.rsi14 = +(100 - (100 / (1 + rs))).toFixed(1);
+    } else if(i > 14) {
+      const delta = allDays[i][1] - allDays[i-1][1];
+      const gain = Math.max(delta, 0);
+      const loss = Math.max(-delta, 0);
+      avgGain = ((avgGain * 13) + gain) / 14;
+      avgLoss = ((avgLoss * 13) + loss) / 14;
+      const rs = avgLoss === 0 ? Infinity : avgGain / avgLoss;
+      pt.rsi14 = +(100 - (100 / (1 + rs))).toFixed(1);
+    }
+    result.push(pt);
+  }
+  return result;
+}
+
 // ─── Dashboard Charts ─────────────────────────────────────────────────────────
 function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, historicalPriceLoading, settings, updateSettings }) {
   const { chartData, holdingsHistory, dcaData, feeBurnData, rewardData, plData, monthlySummary } = React.useMemo(() => {
@@ -913,30 +962,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
     if(!historicalPrices || !Object.keys(historicalPrices).length) return [];
     const allDays = Object.entries(historicalPrices).sort((a,b)=>a[0].localeCompare(b[0]));
     if(allDays.length < 200) return [];
-    const result = [];
-    for(let i=0; i<allDays.length; i++) {
-      const [date, price] = allDays[i];
-      const pt = { date, price };
-      // 50-day MA
-      if(i >= 49) {
-        let sum = 0;
-        for(let j=i-49; j<=i; j++) sum += allDays[j][1];
-        pt.ma50d = +(sum/50).toFixed(2);
-      }
-      // 200-day MA
-      if(i >= 199) {
-        let sum = 0;
-        for(let j=i-199; j<=i; j++) sum += allDays[j][1];
-        pt.ma200d = +(sum/200).toFixed(2);
-      }
-      // 200-week MA (1400 days)
-      if(i >= 1399) {
-        let sum = 0;
-        for(let j=i-1399; j<=i; j++) sum += allDays[j][1];
-        pt.ma200w = +(sum/1400).toFixed(2);
-      }
-      result.push(pt);
-    }
+    const result = buildMovingAverageSeries(allDays);
     // Apply range filter
     const range = settings.chartRange || '1Y';
     if(range === 'All') return result;
@@ -990,7 +1016,6 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       plPts.push({ date, realized: +realized.toFixed(2), unrealized, totalPL: +(realized+unrealized).toFixed(2) });
       monthlyPts.push({ date, month, buys: buyUsd, sells: 0, rewards: 0, fees: 0 });
     }
-    const movingAvgPts = [];
     const totalDays = 1700;
     const start = new Date(today);
     start.setDate(start.getDate() - (totalDays - 1));
@@ -1005,26 +1030,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       const price = +(trend + longCycle + shortCycle).toFixed(2);
       dailyPrices.push([date, price]);
     }
-    for(let i = 0; i < dailyPrices.length; i++) {
-      const [date, price] = dailyPrices[i];
-      const pt = { date, price };
-      if(i >= 49) {
-        let sum = 0;
-        for(let j = i - 49; j <= i; j++) sum += dailyPrices[j][1];
-        pt.ma50d = +(sum / 50).toFixed(2);
-      }
-      if(i >= 199) {
-        let sum = 0;
-        for(let j = i - 199; j <= i; j++) sum += dailyPrices[j][1];
-        pt.ma200d = +(sum / 200).toFixed(2);
-      }
-      if(i >= 1399) {
-        let sum = 0;
-        for(let j = i - 1399; j <= i; j++) sum += dailyPrices[j][1];
-        pt.ma200w = +(sum / 1400).toFixed(2);
-      }
-      movingAvgPts.push(pt);
-    }
+    const movingAvgPts = buildMovingAverageSeries(dailyPrices);
     return {
       chart: pts,
       holdings: holdPts,
@@ -1050,6 +1056,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
   const visibleChart = isSample ? sc.chart : rangeFiltered.chart;
   const chartRangeVal = settings.chartRange || 'All';
   const hc = settings.hiddenCharts || {};
+  const effectiveHiddenCharts = isSample && hc.monthly === undefined ? { ...hc, monthly: true } : hc;
   const _costData = isSample ? sc.chart.filter(d=>d.avgCost!==null) : costData;
   const _usdHoldings = isSample ? sc.holdings : usdHoldingsData;
   const _dca = isSample ? sc.dca : rangeFiltered.dca;
@@ -1139,7 +1146,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
           formatTooltip={v => { const usd = btcPrice ? ' · $'+Math.round(v*btcPrice).toLocaleString() : ''; return v.toFixed(8)+' BTC'+usd; }}
           fillGradient={true}
         /> : null,
-        monthly: () => (isSample ? false : _monthly.length > 1) ? <SVGChart sampleData={S}
+        monthly: () => _monthly.length > 1 ? <SVGChart sampleData={S}
           data={_monthly} dataKey="buys" title="Monthly Summary"
           subtitle={_monthly.length+' months of activity'}
           color="#0ea5e9" chartType="bar" formatY={fmtCompactUSD}
@@ -1149,6 +1156,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
           data={_movingAvg} dataKey="price" title="BTC Price & Moving Averages"
           subtitle={fmtCompactUSD(_movingAvg[_movingAvg.length-1]?.price||0)+' current'}
           color="#f7931a" formatY={fmtCompactUSD} formatTooltip={v => '$'+Math.round(v).toLocaleString()} publicData
+          overlay={_movingAvg.some(d=>d.rsi14!=null) ? { data: _movingAvg.filter(d=>d.rsi14!=null), dataKey: 'rsi14', color: '#8b5cf6', formatY: v => Math.round(v), formatTooltip: v => 'RSI: '+v.toFixed(1), label: 'RSI (14)' } : undefined}
           lines={[
             ...((settings.maLines?.ma50d!==false) && _movingAvg.some(d=>d.ma50d!=null) ? [{ dataKey:'ma50d', color:'#10b981', label:'50D MA', dashed:false, formatTooltip:v=>'50D: $'+Math.round(v).toLocaleString() }] : []),
             ...((settings.maLines?.ma200d!==false) && _movingAvg.some(d=>d.ma200d!=null) ? [{ dataKey:'ma200d', color:'#2563eb', label:'200D MA', dashed:false, formatTooltip:v=>'200D: $'+Math.round(v).toLocaleString() }] : []),
@@ -1160,7 +1168,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
       const reconciledOrder = [...order.filter(k => DEFAULT_CHART_ORDER.includes(k)), ...DEFAULT_CHART_ORDER.filter(k => !order.includes(k))];
       return (
         <div className="charts-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(320px,1fr))',gap:'1rem'}}>
-          {reconciledOrder.map(key => !hc[key] && chartRenderers[key] ? <React.Fragment key={key}>{chartRenderers[key]()}</React.Fragment> : null)}
+          {reconciledOrder.map(key => !effectiveHiddenCharts[key] && chartRenderers[key] ? <React.Fragment key={key}>{chartRenderers[key]()}</React.Fragment> : null)}
         </div>
       );
     })()}
@@ -2388,7 +2396,10 @@ function App() {
 
   // ─── Render ───────────────────────────────────────────────────────────────
   const isSampleMode = transactions.length === 0;
-  const effectiveSettings = isSampleMode ? { ...settings, bgDots: false, showVault: false } : settings;
+  const effectiveSettings = settings;
+  const effectiveHiddenCharts = isSampleMode && (settings.hiddenCharts||{}).monthly === undefined
+    ? { ...(settings.hiddenCharts||{}), monthly: true }
+    : (settings.hiddenCharts||{});
 
   return (
     <div className={`app ${effectiveSettings.hideValues?'values-hidden':''}`}>
@@ -3141,20 +3152,20 @@ function App() {
                 <div style={{borderTop:'1px solid var(--border-color)',marginTop:'1rem',paddingTop:'1rem',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                   <div>
                     <div style={{fontSize:'.9375rem',fontWeight:600}}>Background Dots</div>
-                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{isSampleMode ? 'Unavailable while sample charts are showing' : 'Show dot pattern on the main background'}</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Show dot pattern on the main background</div>
                   </div>
                   <label className="theme-switch">
-                    <input type="checkbox" checked={effectiveSettings.bgDots!==false} onChange={e=>updateSettings({bgDots:e.target.checked})} disabled={isSampleMode} />
+                    <input type="checkbox" checked={effectiveSettings.bgDots!==false} onChange={e=>updateSettings({bgDots:e.target.checked})} />
                     <span className="theme-slider"></span>
                   </label>
                 </div>
                 <div style={{borderTop:'1px solid var(--border-color)',marginTop:'1rem',paddingTop:'1rem',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
                   <div>
                     <div style={{fontSize:'.9375rem',fontWeight:600}}>Inheritance Vault</div>
-                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>{isSampleMode ? 'Unavailable until at least one transaction exists' : 'Show the encrypted vault page in navigation'}</div>
+                    <div style={{fontSize:'.8125rem',color:'var(--text-secondary)'}}>Show the encrypted vault page in navigation</div>
                   </div>
                   <label className="theme-switch">
-                    <input type="checkbox" checked={effectiveSettings.showVault!==false} onChange={e=>updateSettings({showVault:e.target.checked})} disabled={isSampleMode} />
+                    <input type="checkbox" checked={effectiveSettings.showVault!==false} onChange={e=>updateSettings({showVault:e.target.checked})} />
                     <span className="theme-slider"></span>
                   </label>
                 </div>
@@ -3216,7 +3227,7 @@ function App() {
                             </button>
                           </div>
                           <label className="theme-switch" style={{flexShrink:0}}>
-                            <input type="checkbox" checked={!(settings.hiddenCharts||{})[chart.key]} onChange={e=>{
+                            <input type="checkbox" checked={!effectiveHiddenCharts[chart.key]} onChange={e=>{
                               const hc = {...(settings.hiddenCharts||{})};
                               if(e.target.checked) delete hc[chart.key]; else hc[chart.key]=true;
                               updateSettings({hiddenCharts:hc});
@@ -3224,7 +3235,7 @@ function App() {
                             <span className="theme-slider"></span>
                           </label>
                         </div>
-                        {chart.key === 'movingAvg' && !(settings.hiddenCharts||{}).movingAvg && (
+                        {chart.key === 'movingAvg' && !effectiveHiddenCharts.movingAvg && (
                           <div style={{marginLeft:'1.25rem',paddingLeft:'.75rem',borderLeft:'2px solid var(--border-color)',marginTop:'.5rem'}}>
                             {maLineDefs.map((ma, mi) => (
                               <div key={ma.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'.5rem',...(mi>0?{borderTop:'1px solid var(--border-color)',marginTop:'.5rem',paddingTop:'.5rem'}:{})}}>
