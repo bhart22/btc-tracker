@@ -3419,7 +3419,7 @@ function App() {
                           <label className="theme-switch" style={{flexShrink:0}}>
                             <input type="checkbox" checked={!effectiveHiddenCharts[chart.key]} onChange={e=>{
                               const hc = {...(settings.hiddenCharts||{})};
-                              if(e.target.checked) delete hc[chart.key]; else hc[chart.key]=true;
+                              hc[chart.key] = e.target.checked ? false : true;
                               updateSettings({hiddenCharts:hc});
                             }} />
                             <span className="theme-slider"></span>
@@ -3436,7 +3436,7 @@ function App() {
                                 <label className="theme-switch" style={{flexShrink:0}}>
                                   <input type="checkbox" checked={effectiveMaLines[ma.key]!==false} onChange={e=>{
                                     const ml = {...(settings.maLines||{})};
-                                    if(e.target.checked) delete ml[ma.key]; else ml[ma.key]=false;
+                                    ml[ma.key] = e.target.checked ? true : false;
                                     updateSettings({maLines:ml});
                                   }} />
                                   <span className="theme-slider"></span>
