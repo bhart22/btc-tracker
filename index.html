@@ -315,6 +315,23 @@
     .card-header { padding:1.125rem 1.5rem; border-bottom:1px solid var(--border-color); display:flex; justify-content:space-between; align-items:center; gap:1rem; }
     .card-title { font-size:1rem; font-weight:600; letter-spacing:-.01em; }
     .card-body { padding:1.25rem 1.5rem; }
+    .legal-shell { max-width:960px; margin:0 auto; }
+    .legal-hero { background:linear-gradient(135deg,var(--bg-secondary),var(--bitcoin-light)); border:1px solid var(--border-color); border-radius:16px; box-shadow:var(--shadow-sm); padding:1.5rem; margin-bottom:1.25rem; }
+    .legal-kicker { display:inline-flex; align-items:center; gap:.4rem; padding:.2rem .55rem; border-radius:999px; background:var(--bg-tertiary); border:1px solid var(--border-color); color:var(--text-secondary); font-size:.6875rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .legal-title { font-size:1.75rem; line-height:1.15; font-weight:700; letter-spacing:-.03em; margin:.9rem 0 .5rem; }
+    .legal-summary { max-width:720px; font-size:.95rem; color:var(--text-secondary); }
+    .legal-meta { display:flex; gap:.625rem; flex-wrap:wrap; margin-top:1rem; }
+    .legal-meta-chip { display:inline-flex; align-items:center; gap:.35rem; padding:.3rem .65rem; border-radius:999px; background:var(--bg-secondary); border:1px solid var(--border-color); font-size:.75rem; color:var(--text-secondary); }
+    .legal-card { background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:14px; box-shadow:var(--shadow-sm); padding:1.25rem 1.5rem; margin-bottom:1rem; }
+    .legal-card h2 { font-size:1.02rem; font-weight:700; letter-spacing:-.02em; margin-bottom:.7rem; }
+    .legal-card p { color:var(--text-secondary); font-size:.9rem; margin-bottom:.75rem; }
+    .legal-card p:last-child { margin-bottom:0; }
+    .legal-card ul { margin:0; padding-left:1.1rem; color:var(--text-secondary); }
+    .legal-card li { margin:.35rem 0; }
+    .legal-actions { display:flex; gap:.625rem; flex-wrap:wrap; margin-top:1rem; }
+    .legal-link-row { display:flex; gap:.5rem; flex-wrap:wrap; padding:.625rem .75rem .75rem; border-top:1px solid var(--border-color); }
+    .legal-link { display:inline-flex; align-items:center; gap:.4rem; padding:.35rem .65rem; border-radius:999px; border:1px solid var(--border-color); background:var(--bg-tertiary); color:var(--text-secondary); text-decoration:none; font-size:.75rem; font-weight:600; cursor:pointer; }
+    .legal-link:hover { color:var(--text-primary); border-color:var(--border-hover); }
 
     /* Stats grid */
     .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-bottom:1.25rem; }
@@ -712,6 +729,7 @@ const Icon = {
   Moon: (s)=><svg {...sz} {...s}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>,
   HelpCircle: (s)=><svg {...sz} {...s}><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
   Info: (s)=><svg {...sz} {...s}><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>,
+  FileText: (s)=><svg {...sz} {...s}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>,
   Heart: (s)=><svg {...sz} {...s}><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>,
   Zap: (s)=><svg {...sz} {...s}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
   Copy: (s)=><svg {...sz} {...s}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
@@ -726,9 +744,38 @@ const NAV_ITEMS = [
   { key:'vault', label:'Vault', icon:'Lock' },
   { key:'export', label:'Export', icon:'Download' },
   { key:'settings', label:'Settings', icon:'Settings' },
+  { key:'privacy', label:'Privacy Policy', icon:'FileText', legal:true },
+  { key:'terms', label:'Terms of Service', icon:'FileText', legal:true },
 ];
+const PRIMARY_NAV_ITEMS = NAV_ITEMS.filter(item => !item.legal);
+const LEGAL_NAV_ITEMS = NAV_ITEMS.filter(item => item.legal);
+const LEGAL_LAST_UPDATED = 'March 10, 2026';
 
 const DEFAULT_CHART_ORDER = ['movingAvg','accumulatedBtc','costBasis','usdHoldings','dca','pl','feeBurn','rewards','monthly'];
+
+function LegalPage({ title, summary, points, children, onBack }) {
+  return (
+    <div className="legal-shell">
+      <div className="legal-hero">
+        <div className="legal-kicker">
+          {Icon.FileText({width:13,height:13})}
+          Legal
+        </div>
+        <div className="legal-title">{title}</div>
+        <div className="legal-summary">{summary}</div>
+        <div className="legal-meta">
+          {points.map(point => (
+            <div key={point} className="legal-meta-chip">{point}</div>
+          ))}
+        </div>
+        <div className="legal-actions">
+          <button className="btn btn-secondary" onClick={onBack}>Back to Dashboard</button>
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
 
 function buildMovingAverageSeries(allDays) {
   if(!allDays.length) return [];
@@ -2624,7 +2671,7 @@ function App() {
           <div className="logo-icon">₿</div>
         </div>
         <div className="mobile-drawer-nav">
-          {NAV_ITEMS.filter(item=> item.key!=='vault' || effectiveSettings.showVault!==false).map(item=>(
+          {PRIMARY_NAV_ITEMS.filter(item=> item.key!=='vault' || effectiveSettings.showVault!==false).map(item=>(
             <button key={item.key} className={`sidebar-item ${tab===item.key?'active':''}`} onClick={()=>{setTab(item.key);setMobileMenuOpen(false);}}>
               {Icon[item.icon]({width:18,height:18})}
               <span>{item.label}</span>
@@ -2643,6 +2690,13 @@ function App() {
         <button onClick={()=>{setShowTipJar(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%'}}>
           {Icon.Heart({width:16,height:16})} Send a tip
         </button>
+        <div className="legal-link-row" style={{paddingTop:'.75rem'}}>
+          {LEGAL_NAV_ITEMS.map(item => (
+            <button key={item.key} className="legal-link" onClick={()=>{setTab(item.key);setMobileMenuOpen(false);}}>
+              {Icon[item.icon]({width:12,height:12})} {item.label}
+            </button>
+          ))}
+        </div>
         <div className="sidebar-version">v3.27</div>
       </nav>
 
@@ -2650,7 +2704,7 @@ function App() {
         {/* Desktop sidebar */}
         <aside className={`sidebar ${sidebarCollapsed?'collapsed':''}`}>
           <nav className="sidebar-nav">
-            {NAV_ITEMS.filter(item=> item.key!=='vault' || effectiveSettings.showVault!==false).map(item=>(
+            {PRIMARY_NAV_ITEMS.filter(item=> item.key!=='vault' || effectiveSettings.showVault!==false).map(item=>(
               <button key={item.key} className={`sidebar-item ${tab===item.key?'active':''}`} onClick={()=>setTab(item.key)} title={sidebarCollapsed?item.label:undefined}>
                 {Icon[item.icon]({width:18,height:18})}
                 <span className="sidebar-item-label">{item.label}</span>
@@ -2669,6 +2723,13 @@ function App() {
           <button onClick={()=>setShowTipJar(true)} title="Send a tip" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:sidebarCollapsed?'center':'flex-start'}}>
             {Icon.Heart({width:16,height:16})} {!sidebarCollapsed && 'Send a tip'}
           </button>
+          <div className="legal-link-row" style={{justifyContent:sidebarCollapsed?'center':'flex-start'}}>
+            {LEGAL_NAV_ITEMS.map(item => (
+              <button key={item.key} className="legal-link" onClick={()=>setTab(item.key)} title={sidebarCollapsed?item.label:undefined}>
+                {Icon[item.icon]({width:12,height:12})} {!sidebarCollapsed && item.label}
+              </button>
+            ))}
+          </div>
           <div className="sidebar-version">v3.27</div>
         </aside>
 
@@ -3513,6 +3574,154 @@ function App() {
               </div>
             </div>
           </div>
+        )}
+        {tab==='privacy' && (
+          <LegalPage
+            title="Privacy Policy"
+            summary="SatLedger is designed to keep your portfolio data under your control. This policy explains what data the app stores, when data leaves your browser, and what third-party services are involved."
+            points={[
+              `Last updated ${LEGAL_LAST_UPDATED}`,
+              'Core app data stays in your browser',
+              'Google Drive sync is optional',
+            ]}
+            onBack={()=>setTab('dashboard')}
+          >
+            <div className="legal-card">
+              <h2>Overview</h2>
+              <p>SatLedger is a client-side Bitcoin portfolio tracker. By default, your transactions, wallets, settings, and other app data are stored locally in your browser using local storage on the device you use to access the app.</p>
+              <p>SatLedger does not require you to create an account to use its core features, and the app is intended to function without sending your portfolio data to a SatLedger-operated backend.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Information SatLedger Stores</h2>
+              <ul>
+                <li>Portfolio data you enter, such as wallet names, transaction history, notes, price information, and app preferences.</li>
+                <li>Optional encrypted inheritance vault data if you choose to use the vault feature.</li>
+                <li>Temporary interface preferences such as theme, sidebar state, and chart settings.</li>
+                <li>If you enable Google Drive sync, tokens and sync metadata needed to reconnect and locate your app data file.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>How Data Is Used</h2>
+              <ul>
+                <li>To calculate holdings, cost basis, profit and loss, charts, exports, and other portfolio views inside the app.</li>
+                <li>To remember your app configuration and restore your local session on the same browser.</li>
+                <li>To back up and sync your data across devices only if you explicitly sign in with Google and enable that feature.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>Google Drive Sync</h2>
+              <p>If you choose to sign in with Google, SatLedger requests access to Google Drive's <code>appDataFolder</code> scope. That scope is intended for app-specific hidden storage and is used only to read and write the SatLedger backup file needed for sync.</p>
+              <p>Your synced data is stored in your own Google account, not in a public folder. SatLedger uses the Google Identity Services and Google Drive APIs solely to authenticate you and move your chosen backup data between your browser and your Google Drive app data storage.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Inheritance Vault</h2>
+              <p>The inheritance vault is intended to store sensitive notes in encrypted form. Vault encryption and decryption happen in your browser using the passphrase you provide. SatLedger is not designed to know or recover that passphrase for you.</p>
+              <p>If you sync the vault through Google Drive, the encrypted vault data may be included in your backup file, but it remains encrypted ciphertext unless someone also has the correct passphrase.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Third-Party Services</h2>
+              <ul>
+                <li>Coinbase endpoints are used to request live and historical BTC price data.</li>
+                <li>Google services are used only if you opt into Google sign-in and Drive sync.</li>
+                <li>Your use of those services is also subject to the applicable Google and Coinbase terms and privacy practices.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>Data Retention and Control</h2>
+              <ul>
+                <li>You can delete local app data by using the reset and import/export controls inside SatLedger or by clearing your browser storage.</li>
+                <li>If you used Google Drive sync, copies stored in your Google Drive app data folder remain there until replaced or deleted.</li>
+                <li>You are responsible for maintaining your own backups and verifying exported files before relying on them.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>Security</h2>
+              <p>SatLedger is built to minimize unnecessary data transmission, but no software, browser environment, local device, or third-party platform can be guaranteed to be completely secure. You are responsible for protecting your device, browser profile, Google account, exported backups, and vault passphrase.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Children's Privacy</h2>
+              <p>SatLedger is not directed to children under 13, and it is not intended for use by anyone who cannot legally agree to these terms in their jurisdiction.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Changes to This Policy</h2>
+              <p>This Privacy Policy may be updated from time to time as SatLedger evolves. The updated version will be posted on this page with a revised effective date.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Contact</h2>
+              <p>Questions about this Privacy Policy can be sent to <a href="mailto:info@satledger.com" style={{color:'var(--bitcoin-orange)',fontWeight:600,textDecoration:'none'}}>info@satledger.com</a>.</p>
+            </div>
+          </LegalPage>
+        )}
+
+        {tab==='terms' && (
+          <LegalPage
+            title="Terms of Service"
+            summary="These terms govern your use of SatLedger. They focus on practical responsibilities: you control your data, you verify your own records, and you do not rely on SatLedger as legal, tax, investment, or custody infrastructure."
+            points={[
+              `Last updated ${LEGAL_LAST_UPDATED}`,
+              'Use at your own risk',
+              'Not financial, tax, or legal advice',
+            ]}
+            onBack={()=>setTab('dashboard')}
+          >
+            <div className="legal-card">
+              <h2>Acceptance of Terms</h2>
+              <p>By accessing or using SatLedger, you agree to these Terms of Service. If you do not agree, do not use the app.</p>
+            </div>
+            <div className="legal-card">
+              <h2>What SatLedger Provides</h2>
+              <p>SatLedger is a self-directed Bitcoin portfolio tracking tool. It is provided for informational and personal record-keeping purposes only. SatLedger does not provide brokerage, exchange, custody, fiduciary, investment advisory, accounting, tax, or legal services.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Your Responsibilities</h2>
+              <ul>
+                <li>You are responsible for the accuracy of the transactions, wallet assignments, prices, notes, and other data you enter or import.</li>
+                <li>You are responsible for reviewing outputs, charts, cost basis calculations, exports, and tax-related files before relying on them.</li>
+                <li>You are responsible for securing your device, browser profile, exported files, Google account, backups, and any vault passphrase you choose.</li>
+                <li>You are responsible for complying with applicable laws, regulations, and tax-reporting obligations.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>No Financial, Tax, or Legal Advice</h2>
+              <p>Information produced by SatLedger is a software output based on the data available to it. It is not financial advice, tax advice, legal advice, or a substitute for professional review.</p>
+            </div>
+            <div className="legal-card">
+              <h2>No Warranties</h2>
+              <p>SatLedger is provided on an "as is" and "as available" basis. To the maximum extent permitted by law, SatLedger disclaims warranties of any kind, whether express or implied, including warranties of merchantability, fitness for a particular purpose, non-infringement, accuracy, availability, and uninterrupted operation.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Price Data and Third-Party Dependencies</h2>
+              <p>Some features depend on third-party data and services, including Coinbase price data and optional Google authentication and Drive sync. Those services may change, become unavailable, rate-limit requests, or return incomplete or inaccurate data, and SatLedger is not responsible for that behavior.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Limitation of Liability</h2>
+              <p>To the maximum extent permitted by law, SatLedger and its operator will not be liable for any indirect, incidental, special, consequential, exemplary, or punitive damages, or for any loss of data, profits, tax positions, investment opportunity, or digital assets arising out of or related to your use of the app.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Prohibited Use</h2>
+              <ul>
+                <li>You may not use SatLedger in a way that violates law or infringes the rights of others.</li>
+                <li>You may not attempt to interfere with the app, its client-side operation, or any connected third-party services.</li>
+                <li>You may not represent SatLedger outputs as guaranteed accurate without independent verification.</li>
+              </ul>
+            </div>
+            <div className="legal-card">
+              <h2>Intellectual Property</h2>
+              <p>Except where otherwise stated, SatLedger and its associated branding, interface, and source materials remain the property of their respective owner(s). These terms do not transfer ownership of the app to you.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Changes, Suspension, or Discontinuation</h2>
+              <p>SatLedger may be updated, changed, suspended, or discontinued at any time without notice. Features, integrations, and data formats may also change over time.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Changes to These Terms</h2>
+              <p>These Terms of Service may be updated from time to time. Continued use of SatLedger after updated terms are posted constitutes acceptance of the revised terms.</p>
+            </div>
+            <div className="legal-card">
+              <h2>Contact</h2>
+              <p>Questions about these Terms of Service can be sent to <a href="mailto:info@satledger.com" style={{color:'var(--bitcoin-orange)',fontWeight:600,textDecoration:'none'}}>info@satledger.com</a>.</p>
+            </div>
+          </LegalPage>
         )}
       </main>
       </div>{/* end app-body */}
