@@ -254,8 +254,8 @@
     .sidebar-item-label { opacity:1; transition:opacity .15s; }
     .sidebar.collapsed .sidebar-item-label { opacity:0; width:0; overflow:hidden; }
     .sidebar.collapsed .sidebar-item { justify-content:center; padding:.625rem 1rem; }
-    .sidebar-theme { padding:.625rem .5rem; border-top:1px solid var(--border-color); display:flex; align-items:center; gap:.75rem; }
-    .sidebar-theme-toggle { width:38px; height:22px; border-radius:11px; border:none; cursor:pointer; position:relative; transition:background .2s; flex-shrink:0; margin-left:10px; }
+    .sidebar-theme { padding:.625rem .5rem; display:flex; align-items:center; justify-content:center; gap:.75rem; }
+    .sidebar-theme-toggle { width:38px; height:22px; border-radius:11px; border:none; cursor:pointer; position:relative; transition:background .2s; flex-shrink:0; margin-left:0; }
     .sidebar-theme-toggle.light { background:var(--border-color); }
     .sidebar-theme-toggle.dark { background:var(--bitcoin-orange); }
     .sidebar-theme-toggle .toggle-knob { width:16px; height:16px; border-radius:8px; background:#fff; position:absolute; top:3px; transition:left .2s; box-shadow:0 1px 3px rgba(0,0,0,.2); }
@@ -264,7 +264,7 @@
     .sidebar-theme-label { font-size:.8125rem; color:var(--text-secondary); font-weight:500; white-space:nowrap; }
     .sidebar.collapsed .sidebar-theme-label { opacity:0; width:0; overflow:hidden; }
     .sidebar.collapsed .sidebar-theme { justify-content:center; }
-    .sidebar.collapsed .sidebar-theme-toggle { margin-left:0; }
+    .sidebar-utility-links { border-top:1px solid var(--border-color); padding-top:.25rem; }
     .theme-switch { position:relative; display:inline-block; width:38px; height:22px; flex-shrink:0; }
     .theme-switch input { opacity:0; width:0; height:0; }
     .theme-slider { position:absolute; cursor:pointer; inset:0; background:var(--border-color); border-radius:11px; transition:background .2s; }
@@ -760,15 +760,16 @@ const RSI_ZONE_COLORS = {
 };
 
 function normalizeRsiThresholds(thresholds) {
+  if(thresholds === undefined) return { ...DEFAULT_RSI_THRESHOLDS };
   const rawOverbought = Number(thresholds?.overbought);
   const rawOversold = Number(thresholds?.oversold);
-  const overbought = Number.isFinite(rawOverbought) && rawOverbought >= 0 && rawOverbought <= 100
+  const overbought = Number.isFinite(rawOverbought) && rawOverbought > 0 && rawOverbought <= 100
     ? rawOverbought
-    : DEFAULT_RSI_THRESHOLDS.overbought;
-  const oversold = Number.isFinite(rawOversold) && rawOversold >= 0 && rawOversold <= 100
+    : null;
+  const oversold = Number.isFinite(rawOversold) && rawOversold > 0 && rawOversold <= 100
     ? rawOversold
-    : DEFAULT_RSI_THRESHOLDS.oversold;
-  if(oversold >= overbought) return { ...DEFAULT_RSI_THRESHOLDS };
+    : null;
+  if(overbought != null && oversold != null && oversold >= overbought) return { ...DEFAULT_RSI_THRESHOLDS };
   return { overbought, oversold };
 }
 
@@ -783,8 +784,8 @@ function normalizeSettings(nextSettings) {
 
 function getRsiState(value, thresholds = DEFAULT_RSI_THRESHOLDS) {
   if(value == null || !Number.isFinite(Number(value))) return 'neutral';
-  if(value >= thresholds.overbought) return 'overbought';
-  if(value <= thresholds.oversold) return 'oversold';
+  if(thresholds.overbought != null && value >= thresholds.overbought) return 'overbought';
+  if(thresholds.oversold != null && value <= thresholds.oversold) return 'oversold';
   return 'neutral';
 }
 
@@ -793,13 +794,28 @@ function getRsiColor(value, thresholds = DEFAULT_RSI_THRESHOLDS) {
 }
 
 function validateRsiThresholdDraft(draft) {
-  const overbought = Number(draft.overbought);
-  const oversold = Number(draft.oversold);
-  if(draft.overbought === '' || draft.oversold === '') return { error: 'Enter both RSI threshold values.' };
-  if(!Number.isFinite(overbought) || !Number.isFinite(oversold)) return { error: 'RSI thresholds must be numeric values.' };
-  if(overbought < 0 || overbought > 100 || oversold < 0 || oversold > 100) return { error: 'RSI thresholds must stay between 0 and 100.' };
-  if(oversold >= overbought) return { error: 'Oversold must be lower than overbought.' };
-  return { overbought, oversold, error: '' };
+  const rawOverbought = String(draft.overbought ?? '').trim();
+  const rawOversold = String(draft.oversold ?? '').trim();
+  const overbought = rawOverbought === '' ? null : Number(rawOverbought);
+  const oversold = rawOversold === '' ? null : Number(rawOversold);
+  if((overbought != null && !Number.isFinite(overbought)) || (oversold != null && !Number.isFinite(oversold))) {
+    return { error: 'RSI thresholds must be numeric values.' };
+  }
+  if((overbought != null && (overbought < 0 || overbought > 100)) || (oversold != null && (oversold < 0 || oversold > 100))) {
+    return { error: 'RSI thresholds must stay between 0 and 100.' };
+  }
+  const normalizedOverbought = overbought && overbought > 0 ? overbought : null;
+  const normalizedOversold = oversold && oversold > 0 ? oversold : null;
+  if(normalizedOverbought != null && normalizedOversold != null && normalizedOversold >= normalizedOverbought) {
+    return { error: 'Oversold must be lower than overbought.' };
+  }
+  if(normalizedOverbought == null && normalizedOversold == null) {
+    return { overbought: null, oversold: null, error: '' };
+  }
+  if(normalizedOverbought == null || normalizedOversold == null) {
+    return { overbought: normalizedOverbought, oversold: normalizedOversold, error: '' };
+  }
+  return { overbought: normalizedOverbought, oversold: normalizedOversold, error: '' };
 }
 
 function LegalPage({ title, summary, points, children, onBack }) {
@@ -1398,6 +1414,10 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
             if((effectiveMaLines.rsi14===false) || !_movingAvg.some(d=>d.rsi14!=null)) return undefined;
             const rsiData = _movingAvg.filter(d=>d.rsi14!=null);
             const latestRsi = rsiData[rsiData.length-1]?.rsi14 ?? null;
+            const activeRefLines = [
+              ...(rsiThresholds.overbought != null ? [{ value: rsiThresholds.overbought, color: RSI_ZONE_COLORS.overbought, label: 'RSI Overbought' }] : []),
+              ...(rsiThresholds.oversold != null ? [{ value: rsiThresholds.oversold, color: RSI_ZONE_COLORS.oversold, label: 'RSI Oversold' }] : []),
+            ];
             return {
               data: rsiData,
               dataKey: 'rsi14',
@@ -1407,10 +1427,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
               label: 'RSI (14)',
               getValueColor: v => getRsiColor(v, rsiThresholds),
               getLegendColor: () => getRsiColor(latestRsi, rsiThresholds),
-              refLines: [
-                { value: rsiThresholds.overbought, color: RSI_ZONE_COLORS.overbought, label: 'RSI Overbought' },
-                { value: rsiThresholds.oversold, color: RSI_ZONE_COLORS.oversold, label: 'RSI Oversold' },
-              ],
+              refLines: activeRefLines,
             };
           })()}
           lines={[
@@ -1934,12 +1951,18 @@ function App() {
   });
   const [rsiThresholdDraft, setRsiThresholdDraft] = useState(() => {
     const thresholds = normalizeRsiThresholds(settings.rsiThresholds);
-    return { overbought: String(thresholds.overbought), oversold: String(thresholds.oversold) };
+    return {
+      overbought: thresholds.overbought == null ? '' : String(thresholds.overbought),
+      oversold: thresholds.oversold == null ? '' : String(thresholds.oversold),
+    };
   });
   const [rsiThresholdError, setRsiThresholdError] = useState('');
   useEffect(() => {
     const thresholds = normalizeRsiThresholds(settings.rsiThresholds);
-    setRsiThresholdDraft({ overbought: String(thresholds.overbought), oversold: String(thresholds.oversold) });
+    setRsiThresholdDraft({
+      overbought: thresholds.overbought == null ? '' : String(thresholds.overbought),
+      oversold: thresholds.oversold == null ? '' : String(thresholds.oversold),
+    });
     setRsiThresholdError('');
   }, [settings.rsiThresholds?.overbought, settings.rsiThresholds?.oversold]);
   const updateSettings = (patch) => {
@@ -2826,18 +2849,20 @@ function App() {
           </button>
           <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
         </div>
-        <button onClick={()=>{setShowGuide(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%'}}>
-          {Icon.HelpCircle({width:16,height:16})} How it works
-        </button>
-        <button onClick={()=>{setShowTipJar(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%'}}>
-          {Icon.Heart({width:16,height:16})} Send a tip
-        </button>
-        <div className="legal-link-row" style={{paddingTop:'.75rem'}}>
-          {LEGAL_NAV_ITEMS.map(item => (
-            <button key={item.key} className="legal-link" onClick={()=>{setTab(item.key);setMobileMenuOpen(false);}}>
-              {Icon[item.icon]({width:12,height:12})} {item.label}
-            </button>
-          ))}
+        <div className="sidebar-utility-links" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
+          <button onClick={()=>{setShowGuide(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',textAlign:'center'}}>
+            {Icon.HelpCircle({width:16,height:16})} How it works
+          </button>
+          <button onClick={()=>{setShowTipJar(true);setMobileMenuOpen(false);}} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:'.5rem',padding:'.5rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',textAlign:'center'}}>
+            {Icon.Heart({width:16,height:16})} Send a tip
+          </button>
+          <div className="legal-link-row" style={{paddingTop:'.75rem',justifyContent:'center'}}>
+            {LEGAL_NAV_ITEMS.map(item => (
+              <button key={item.key} className="legal-link" onClick={()=>{setTab(item.key);setMobileMenuOpen(false);}}>
+                {Icon[item.icon]({width:12,height:12})} {item.label}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="sidebar-version">v3.28</div>
       </nav>
@@ -2859,18 +2884,20 @@ function App() {
             </button>
             <span className="sidebar-theme-label" style={{display:'flex',alignItems:'center',gap:'.375rem'}}>{theme==='dark' ? Icon.Moon({width:14,height:14}) : Icon.Sun({width:14,height:14})} {theme==='dark' ? 'Dark mode' : 'Light mode'}</span>
           </div>
-          <button onClick={()=>setShowGuide(true)} title="How it works" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:sidebarCollapsed?'center':'flex-start'}}>
-            {Icon.HelpCircle({width:16,height:16})} {!sidebarCollapsed && 'How it works'}
-          </button>
-          <button onClick={()=>setShowTipJar(true)} title="Send a tip" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:sidebarCollapsed?'center':'flex-start'}}>
-            {Icon.Heart({width:16,height:16})} {!sidebarCollapsed && 'Send a tip'}
-          </button>
-          <div className="legal-link-row" style={{justifyContent:sidebarCollapsed?'center':'flex-start'}}>
-            {LEGAL_NAV_ITEMS.map(item => (
-              <button key={item.key} className="legal-link" onClick={()=>setTab(item.key)} title={sidebarCollapsed?item.label:undefined}>
-                {Icon[item.icon]({width:12,height:12})} {!sidebarCollapsed && item.label}
-              </button>
-            ))}
+          <div className="sidebar-utility-links" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
+            <button onClick={()=>setShowGuide(true)} title="How it works" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:'center',textAlign:'center'}}>
+              {Icon.HelpCircle({width:16,height:16})} {!sidebarCollapsed && 'How it works'}
+            </button>
+            <button onClick={()=>setShowTipJar(true)} title="Send a tip" style={{display:'flex',alignItems:'center',gap:'.5rem',padding:'.375rem .75rem',background:'none',border:'none',color:'var(--text-secondary)',cursor:'pointer',fontSize:'.8125rem',fontFamily:'inherit',width:'100%',justifyContent:'center',textAlign:'center'}}>
+              {Icon.Heart({width:16,height:16})} {!sidebarCollapsed && 'Send a tip'}
+            </button>
+            <div className="legal-link-row" style={{justifyContent:'center'}}>
+              {LEGAL_NAV_ITEMS.map(item => (
+                <button key={item.key} className="legal-link" onClick={()=>setTab(item.key)} title={sidebarCollapsed?item.label:undefined}>
+                  {Icon[item.icon]({width:12,height:12})} {!sidebarCollapsed && item.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="sidebar-version">v3.28</div>
         </aside>
@@ -3683,7 +3710,7 @@ function App() {
                                       </label>
                                     </div>
                                     <div style={{fontSize:'.75rem',color:'var(--text-secondary)',marginTop:'.625rem'}}>
-                                      Values above <strong>{rsiThresholdDraft.overbought || DEFAULT_RSI_THRESHOLDS.overbought}</strong> are overbought, and values below <strong>{rsiThresholdDraft.oversold || DEFAULT_RSI_THRESHOLDS.oversold}</strong> are oversold.
+                                      Leave a field blank or set it to <strong>0</strong> to disable that RSI threshold line. When enabled, values above <strong>{rsiThresholdDraft.overbought || 'the overbought threshold'}</strong> are overbought, and values below <strong>{rsiThresholdDraft.oversold || 'the oversold threshold'}</strong> are oversold.
                                     </div>
                                     {rsiThresholdError && (
                                       <div style={{fontSize:'.75rem',color:'var(--red)',marginTop:'.5rem',fontWeight:600}}>
