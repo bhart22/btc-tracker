@@ -2645,6 +2645,7 @@ function App() {
       finalForm.price = (parseFloat(finalForm.totalUsd)/parseFloat(finalForm.amount)).toFixed(2);
     }
     // Warn if sell/transfer would cause negative wallet balance
+    let negativeWarning = '';
     if(finalForm.type==='Sell' || finalForm.type==='Transfer') {
       const amt = parseFloat(finalForm.amount)||0;
       const fee = finalForm.type==='Transfer' ? (parseFloat(finalForm.fee)||0) : 0;
@@ -2657,15 +2658,15 @@ function App() {
         else if(old.type==='Transfer') adjustment = (parseFloat(old.amount)||0) + (parseFloat(old.fee)||0);
       }
       if(walletBal + adjustment - amt - fee < -0.000000005) {
-        showToast(`Warning: ${finalForm.wallet} balance would go negative (${fmtBTC(walletBal + adjustment - amt - fee)} BTC)`);
+        negativeWarning = ` ⚠ ${finalForm.wallet} balance is now negative (${fmtBTC(walletBal + adjustment - amt - fee)} BTC)`;
       }
     }
     if(editIdx!==null) {
       const u=[...transactions]; u[editIdx]=finalForm; setTransactions(u); save(u, wallets);
-      showToast('Transaction updated');
+      showToast('Transaction updated' + negativeWarning);
     } else {
       const added=[...transactions, finalForm]; setTransactions(added); save(added, wallets);
-      showToast('Transaction added');
+      showToast('Transaction added' + negativeWarning);
     }
     setShowModal(false); setEditIdx(null); setForm(emptyForm());
   };
