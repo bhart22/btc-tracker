@@ -1445,7 +1445,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         /> : (hasWalletFilter ? renderFilteredEmptyCard('Accumulated BTC') : null),
         costBasis: () => _costData.length > 1 ? <SVGChart sampleData={S}
           data={_costData} dataKey="avgCost" title="Average Cost Basis"
-          subtitle={'$'+Math.round(_costData[_costData.length-1]?.avgCost||0).toLocaleString()+' / BTC'}
+          subtitle={fmtUSD(_costData[_costData.length-1]?.avgCost||0)+' / BTC'}
           scopeLabel={globalScopeLabel}
           color="#2563eb" formatY={v=>'$'+Math.round(v/1000)+'k'}
           formatTooltip={(v)=>'$'+Math.round(v).toLocaleString()+' avg cost'}
@@ -1453,7 +1453,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         /> : null,
         valueBasis: () => _valueBasis.length > 1 ? <SVGChart sampleData={S}
           data={_valueBasis} dataKey="marketValue" title="Portfolio Value vs Cost Basis"
-          subtitle={(() => { const last = _valueBasis[_valueBasis.length-1]; if(!last) return ''; const diff = last.marketValue - last.costBasis; return fmtCompactUSD(last.marketValue) + ' value · ' + (diff>=0?'+':'') + fmtCompactUSD(diff) + ' P&L'; })()}
+          subtitle={(() => { const last = _valueBasis[_valueBasis.length-1]; if(!last) return ''; const diff = last.marketValue - last.costBasis; return fmtUSD(last.marketValue) + ' value · ' + (diff>=0?'+':'') + fmtUSD(diff) + ' P&L'; })()}
           scopeLabel={globalScopeLabel}
           color="#16a34a" formatY={fmtCompactUSD}
           formatTooltip={v => fmtUSD(v) + ' market value'}
@@ -1462,14 +1462,14 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         /> : (historicalPriceLoading ? <div className="card"><div className="card-header"><div className="card-title">Portfolio Value vs Cost Basis</div><div style={{fontSize:'.8125rem',color:'var(--text-secondary)',fontFamily:'JetBrains Mono'}}>Loading…</div></div></div> : null),
         dca: () => _dca.length > 0 ? <SVGChart sampleData={S}
           data={_dca} dataKey="buyUsd" title="DCA Tracker"
-          subtitle={'$'+Math.round(_dca.reduce((s,d)=>s+d.buyUsd,0)).toLocaleString()+' total invested'}
+          subtitle={fmtUSD(_dca.reduce((s,d)=>s+d.buyUsd,0))+' total invested'}
           scopeLabel={filteredScopeLabel}
           color="#10b981" chartType="bar" formatY={fmtCompactUSD}
           formatTooltip={v => '$'+Math.round(v).toLocaleString()+' bought'}
         /> : (hasWalletFilter ? renderFilteredEmptyCard('DCA Tracker') : null),
         pl: () => _pl.length > 1 ? <SVGChart sampleData={S}
           data={_pl} dataKey="totalPL" title="Realized vs Unrealized P&L"
-          subtitle={(_pl[_pl.length-1]?.totalPL>=0?'+':'')+fmtCompactUSD(_pl[_pl.length-1]?.totalPL||0)+' total P&L'}
+          subtitle={(_pl[_pl.length-1]?.totalPL>=0?'+':'')+fmtUSD(_pl[_pl.length-1]?.totalPL||0)+' total P&L'}
           scopeLabel={globalScopeLabel}
           color={_pl[_pl.length-1]?.totalPL>=0 ? '#16a34a' : '#dc2626'}
           formatY={v => { const sign=v>0?'+':v<0?'-':''; const abs=Math.abs(v); if(abs>=1000000) return sign+'$'+(abs/1000000).toFixed(1).replace(/\.0$/,'')+'M'; if(abs>=1000) return sign+'$'+Math.round(abs/1000)+'k'; if(abs>=1) return sign+'$'+Math.round(abs); return '$0'; }}
@@ -1500,7 +1500,7 @@ function DashboardCharts({ transactions, wallets, btcPrice, historicalPrices, hi
         /> : (hasWalletFilter ? renderFilteredEmptyCard('Monthly Summary') : null),
         movingAvg: () => _movingAvg.length > 0 ? <SVGChart sampleData={isSample && !hasLiveMovingAvg ? S : undefined}
           data={_movingAvg} dataKey="price" title="BTC Price & Moving Averages"
-          subtitle={fmtCompactUSD(_movingAvg[_movingAvg.length-1]?.price||0)+' current'}
+          subtitle={fmtUSD(_movingAvg[_movingAvg.length-1]?.price||0)+' current'}
           scopeLabel={globalScopeLabel}
           color="#f7931a" formatY={fmtCompactUSD} formatTooltip={v => '$'+Math.round(v).toLocaleString()} publicData
           overlay={(() => {
