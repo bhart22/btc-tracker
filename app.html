@@ -926,6 +926,8 @@ const fmtBTC = v => BTC_DISPLAY_UNIT === 'sats'
 const btcUnit = () => BTC_DISPLAY_UNIT === 'sats' ? 'sats' : 'BTC';
 const fmtUSD = v => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2}).format(v||0);
 const fmtDate = d => { if(!d) return '—'; const [y,m,dy] = d.split('-'); return `${m}/${dy}/${y}`; };
+// Local calendar date (YYYY-MM-DD). Avoids toISOString() rolling to the next day in negative-UTC timezones.
+const todayLocal = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
 
 // ─── SVG Icons ───────────────────────────────────────────────────────────────
 const sz = {width:14,height:14,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'};
@@ -2461,7 +2463,7 @@ function App() {
   const [wizardEdits, setWizardEdits] = useState({}); // idx -> {wallet, wallet2, skip}
   const [form, setForm] = useState(() => {
     const defType = (() => { try { const s=localStorage.getItem('btc-settings'); return s ? JSON.parse(s).defaultTxType||'Buy' : 'Buy'; } catch { return 'Buy'; } })();
-    return { date: new Date().toISOString().split('T')[0], type:defType, wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
+    return { date: todayLocal(), type:defType, wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
   });
   const [editIdx, setEditIdx] = useState(null);
   const [editWalletIdx, setEditWalletIdx] = useState(null);
@@ -2512,7 +2514,7 @@ function App() {
   const hasDashboardWalletFilter = selectedDashboardWallets.length > 0;
 
   function emptyForm() {
-    return { date: new Date().toISOString().split('T')[0], type:settings.defaultTxType||'Buy', wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
+    return { date: todayLocal(), type:settings.defaultTxType||'Buy', wallet:'', wallet2:'', amount:'', price:'', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false };
   }
   const lockVault = React.useCallback(() => {
     vaultPassphraseRef.current = '';
