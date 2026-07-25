@@ -242,8 +242,75 @@ console.log('\n[monthly summary bucketing]');
   }
 }
 
+// ── reconciliation audit colours ────────────────────────────────────────────
+// Two wallets emptied to the same zero used to render in different colours, because summing
+// floats leaves sub-satoshi residue and the old thresholds were asymmetric: `> 0` caught
+// +5.6e-17 as a healthy balance, while `< -1e-8` let -2.8e-17 fall through to the warning
+// branch. Both displayed "0 sats" (one as the literal "-0 sats").
+console.log('\n[reconciliation audit colours]');
+{
+  const bal = (id, type, wallet, amount) => ({
+    id, date:'2024-01-01', type, wallet, wallet2:'', amount,
+    price:'40000', fee:'', totalUsd:'', notes:'', txhash:'', excludeStats:false,
+  });
+  await seed({
+    'btc-tx-v2': [
+      // +5.55e-17 of float residue
+      bal('p1','Buy','ArchDustPos','0.1'), bal('p2','Buy','ArchDustPos','0.2'), bal('p3','Sell','ArchDustPos','0.3'),
+      // -2.78e-17 of float residue
+      bal('n1','Buy','ArchDustNeg','0.3'), bal('n2','Sell','ArchDustNeg','0.1'), bal('n3','Sell','ArchDustNeg','0.2'),
+      bal('z1','Buy','ArchZero','0.5'),    bal('z2','Sell','ArchZero','0.5'),
+      bal('h1','Buy','ActiveHolds','0.25'),
+      bal('g1','Sell','ActiveNeg','0.75'), // outflow with no inflow -> genuinely negative
+    ],
+    'btc-wallets': [
+      { id:'w1', name:'ArchDustPos', type:'Exchange', address:'', archived:true },
+      { id:'w2', name:'ArchDustNeg', type:'Exchange', address:'', archived:true },
+      { id:'w3', name:'ArchZero',    type:'Exchange', address:'', archived:true },
+      { id:'w5', name:'ActiveHolds', type:'Wallet',   address:'' },
+      { id:'w6', name:'ActiveEmpty', type:'Wallet',   address:'' },
+      { id:'w7', name:'ActiveNeg',   type:'Wallet',   address:'' },
+    ],
+    'btc-settings': { defaultTxType:'Buy', displayUnit:'sats' },
+  });
+  await reload(6000);
+  await clickByText('Wallets');
+  await wait(1300);
+  const audit = await evaluate(`
+    const out={};
+    [...document.querySelectorAll('.audit-row')].forEach(r=>{
+      const label=r.querySelector('.audit-label')?.textContent;
+      const val=r.querySelector('.audit-value');
+      if(!label||!val) return;
+      out[label]={ shows: val.textContent.trim(),
+                   colour: [...val.classList].find(c=>/^audit-/.test(c) && c!=='audit-value') };
+    });
+    return out;`);
+  const zeros = ['ArchDustPos','ArchDustNeg','ArchZero'].map(k => audit[k]);
+  check('all three emptied wallets display the same value',
+    new Set(zeros.map(z => z?.shows)).size === 1, JSON.stringify(zeros));
+  check('float residue no longer changes the colour of a zero balance',
+    new Set(zeros.map(z => z?.colour)).size === 1, JSON.stringify(zeros));
+  check('never renders the string "-0"',
+    !zeros.some(z => /-0/.test(z?.shows || '')), JSON.stringify(zeros.map(z=>z?.shows)));
+  check('an emptied archived wallet reads as neutral, not a warning',
+    zeros.every(z => z?.colour === 'audit-muted'), JSON.stringify(zeros));
+  check('a wallet holding coins is green', audit['ActiveHolds']?.colour === 'audit-ok', JSON.stringify(audit['ActiveHolds']));
+  check('an active wallet with nothing logged still nudges (orange)',
+    audit['ActiveEmpty']?.colour === 'audit-warn', JSON.stringify(audit['ActiveEmpty']));
+  check('a genuinely negative balance is still flagged red',
+    audit['ActiveNeg']?.colour === 'audit-err', JSON.stringify(audit['ActiveNeg']));
+  check('a negative Total Tracked is not shown as healthy green', await evaluate(`
+    const row=[...document.querySelectorAll('.audit-row')].find(r=>/Total Tracked/.test(r.textContent));
+    const v=row?.querySelector('.audit-value');
+    return !!v && !v.classList.contains('audit-ok');`));
+}
+
 // ── accessible names ────────────────────────────────────────────────────────
+// Charts only exist on the Dashboard, and the block above leaves us on Wallets.
 console.log('\n[accessible names]');
+await clickByText('Dashboard');
+await wait(1500);
 check('no icon-only button without an accessible name', await evaluate(`
   const bad=[...document.querySelectorAll('button')].filter(b=>{
     const txt=(b.textContent||'').trim();

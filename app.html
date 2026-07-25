@@ -620,6 +620,8 @@
     .audit-ok { color:var(--green); }
     .audit-warn { color:#d97706; }
     .audit-err { color:var(--red); }
+    /* An emptied archived wallet is the expected end state, not something to flag */
+    .audit-muted { color:var(--text-tertiary); }
 
     /* Toggle */
     .theme-toggle { width:34px; height:34px; border-radius:8px; background:var(--bg-tertiary); border:1px solid var(--border-color); display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:1rem; transition:all .2s; }
@@ -1117,10 +1119,24 @@ const countWalletReferences = (txs, name) =>
   txs.filter(t => t.wallet===name || t.wallet2===name).length;
 let BTC_DISPLAY_UNIT = 'btc'; // 'btc' | 'sats' — display-only preference, assigned from settings during App render
 // numOr, not parseFloat: a legacy row holding "Infinity" or "abc" renders as 0 instead of
-// "∞"/"NaN" leaking into the UI.
+// "∞"/"NaN" leaking into the UI. The `|| 0` on the sats branch collapses -0 to 0 — summing
+// floats can leave a balance at -2.8e-17, which rounded to the literal string "-0 sats".
 const fmtBTC = v => BTC_DISPLAY_UNIT === 'sats'
-  ? Math.round(numOr(v)*1e8).toLocaleString('en-US')
+  ? (Math.round(numOr(v)*1e8) || 0).toLocaleString('en-US')
   : numOr(v).toFixed(8);
+// True when a balance is zero *as displayed* — i.e. sub-satoshi float residue from adding and
+// subtracting the same coins counts as empty. Keying off the displayed value is what keeps the
+// number and its colour from ever disagreeing.
+const isEffectivelyZeroBTC = v => Math.round(numOr(v)*1e8) === 0;
+// Colour/meaning for a wallet's tracked balance in the Reconciliation Audit.
+//   negative -> a real problem: an outflow with no matching inflow, so a transaction is missing
+//   positive -> holds coins
+//   zero     -> empty. Expected for an archived wallet, so it is stated neutrally there;
+//               for an active wallet it is a gentle nudge that nothing has been logged yet.
+const walletBalanceStatus = (tracked, archived) => {
+  if(isEffectivelyZeroBTC(tracked)) return archived ? 'muted' : 'warn';
+  return tracked < 0 ? 'err' : 'ok';
+};
 const btcUnit = () => BTC_DISPLAY_UNIT === 'sats' ? 'sats' : 'BTC';
 const fmtUSD = v => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2}).format(numOr(v));
 const fmtDate = d => { const n = normalizeDate(d); if(!n) return '—'; const [y,m,dy] = n.split('-'); return `${m}/${dy}/${y}`; };
@@ -4735,7 +4751,7 @@ function App() {
                 </p>
                 {wallets.map(w=>{
                   const tracked = walletHoldings[w.name]||0;
-                  const status = tracked < -0.00000001 ? 'err' : tracked > 0 ? 'ok' : 'warn';
+                  const status = walletBalanceStatus(tracked, w.archived);
                   return (
                     <div key={w.id} className="audit-row">
                       <div style={{display:'flex',alignItems:'center',gap:'.5rem'}}>
@@ -4746,6 +4762,8 @@ function App() {
                       <div style={{display:'flex',alignItems:'center',gap:1}}>
                         <span className={`audit-value audit-${status}`}>{fmtBTC(tracked)} {btcUnit()}</span>
                         {status==='err' && <span style={{marginLeft:'.5rem',fontSize:'.75rem',color:'var(--red)'}}>⚠ Negative balance</span>}
+                        {status==='muted' && <span style={{marginLeft:'.5rem',fontSize:'.75rem',color:'var(--text-tertiary)'}}>empty</span>}
+                        {status==='warn' && <span style={{marginLeft:'.5rem',fontSize:'.75rem',color:'#d97706'}}>no transactions yet</span>}
                       </div>
                     </div>
                   );
@@ -4753,7 +4771,10 @@ function App() {
                 <div className="sep"/>
                 <div className="audit-row">
                   <strong>Total Tracked</strong>
-                  <strong className="audit-value audit-ok">{fmtBTC(trackedHoldings)} {btcUnit()}</strong>
+                  {/* Was hardcoded green, which would have shown a negative total as healthy */}
+                  <strong className={`audit-value audit-${isEffectivelyZeroBTC(trackedHoldings) ? 'muted' : trackedHoldings < 0 ? 'err' : 'ok'}`}>
+                    {fmtBTC(trackedHoldings)} {btcUnit()}
+                  </strong>
                 </div>
               </div>
             </div>
