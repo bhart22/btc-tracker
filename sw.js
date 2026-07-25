@@ -1,21 +1,29 @@
 // SatLedger service worker — offline support and CDN asset caching
-const CACHE_NAME = 'satledger-v2';
+const CACHE_NAME = 'satledger-v3';
 
-const PRECACHE_URLS = [
+// Split so one unreachable URL can't silently disable offline support entirely.
+// cache.addAll() is atomic: a blocked unpkg (corporate proxy, DNS filter, ad blocker) used to
+// reject the whole install, so the worker never activated and nothing was ever cached.
+// CRITICAL stays atomic on purpose — if app.html can't be fetched, the install SHOULD fail.
+const CRITICAL_URLS = [
   './',
   './index.html',
   './app.html',
   './manifest.json',
+  './images/favicon-32.png',
+  './images/icon-192.png',
+];
+
+// Nice to have offline, but never worth failing the install over. Each is added individually.
+const OPTIONAL_URLS = [
   './privacy.html',
   './terms.html',
-  './images/favicon-32.png',
   './images/apple-touch-icon.png',
-  './images/icon-192.png',
   './images/icon-512.png',
-  './images/logo.png',
-  './images/logo-dark.png',
-  './images/logo-minimal.png',
-  './images/logo-white.png',
+  './images/logo-dark-128.png',
+  './images/logo-white-128.png',
+  './images/tip-lightning.png',
+  './images/tip-onchain.png',
   // Pinned CDN scripts — immutable, safe to cache forever (SRI still verified on use)
   'https://unpkg.com/react@18.3.1/umd/react.production.min.js',
   'https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js',
@@ -34,7 +42,13 @@ const NETWORK_ONLY_HOSTS = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(PRECACHE_URLS))
+      .then(cache => cache.addAll(CRITICAL_URLS)
+        .then(() => Promise.allSettled(
+          OPTIONAL_URLS.map(u => cache.add(u).catch(err => {
+            console.warn('[SW] optional precache skipped:', u, err && err.message);
+          }))
+        ))
+      )
       .then(() => self.skipWaiting())
   );
 });

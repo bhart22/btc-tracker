@@ -1,5 +1,19 @@
 {
+  "name": "satledger",
+  "version": "4.0.0",
+  "private": true,
+  "description": "Client-side Bitcoin portfolio tracker. No build step — app.html runs as-is.",
+  "type": "module",
+  "scripts": {
+    "check": "node tools/test/check-jsx.mjs",
+    "test": "npm run check && node tools/test/helpers.mjs && node tools/test/moving-average.mjs",
+    "test:browser": "node tools/test/browser.mjs",
+    "test:all": "npm test && npm run test:browser",
+    "images": "node tools/optimize-images.mjs",
+    "qr": "node tools/generate-tip-qr.mjs"
+  },
   "devDependencies": {
+    "qrcode": "^1.5.4",
     "sharp": "^0.34.5"
   }
 }

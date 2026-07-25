@@ -1,0 +1,267 @@
+// End-to-end smoke test in headless Chrome. Covers the behaviours that are hard to reason
+// about statically and that regressed in the past: corrupt-storage recovery, the transfer
+// wizard's step sequencing, chart geometry after memoization, and modal keyboard handling.
+//
+//   npm run test:browser
+//
+// Skips cleanly (exit 0) if no Chrome/Edge is installed — set CHROME_PATH to point at one.
+import { launch, createChecks, findChrome } from './lib/harness.mjs';
+
+if (!(await findChrome())) {
+  console.log('No Chrome/Edge found — skipping browser tests. Set CHROME_PATH to enable them.');
+  process.exit(0);
+}
+
+const { evaluate, reload, wait, seed, press, close, errors } =
+  await launch({ page: 'app.html', port: 8791, debugPort: 9291, label: 'browser' });
+const { check, report } = createChecks();
+
+const tx = (o) => Object.assign({
+  date:'2024-01-01', type:'Buy', wallet:'Kraken', wallet2:'',
+  amount:'0.1', price:'40000', fee:'', totalUsd:'4000',
+  notes:'', txhash:'', excludeStats:false,
+}, o);
+const WALLETS = [
+  { id:'w1', name:'Kraken', type:'Exchange', address:'' },
+  { id:'w2', name:'Ledger', type:'Cold Storage', address:'' },
+];
+const clickByText = (text) => evaluate(`
+  const b=[...document.querySelectorAll('button,a')].find(x=>new RegExp('^\\\\s*${text}\\\\s*$').test(x.textContent));
+  if(!b) return 'not found'; b.click(); return 'clicked';`);
+
+// ── corrupt storage is quarantined, never silently emptied ───────────────────
+console.log('\n[corrupt storage recovery]');
+await seed({ 'btc-tx-v2': 'undefined', 'btc-wallets': WALLETS });
+await reload();
+check('corrupt value quarantined under -corrupt',
+  await evaluate(`return localStorage.getItem('btc-tx-v2-corrupt') === 'undefined';`));
+check('user is warned rather than shown an empty portfolio',
+  /could not be read/i.test(await evaluate(`return document.querySelector('.toast')?.textContent || '';`)));
+
+// ── stable transaction ids ──────────────────────────────────────────────────
+console.log('\n[stable transaction ids]');
+await seed({ 'btc-tx-v2': [tx({}), tx({ date:'2024-02-01' })], 'btc-wallets': WALLETS,
+             'btc-last-modified': '2020-01-01T00:00:00.000Z' });
+await reload();
+const ids = await evaluate(`return JSON.parse(localStorage.getItem('btc-tx-v2')).map(t=>t.id);`);
+check('ids backfilled and unique', ids.every(Boolean) && new Set(ids).size === 2, JSON.stringify(ids));
+check('the id migration does NOT bump btc-last-modified (would trigger a bogus sync push)',
+  await evaluate(`return localStorage.getItem('btc-last-modified') === '2020-01-01T00:00:00.000Z';`));
+await reload();
+check('ids are stable across reloads',
+  JSON.stringify(await evaluate(`return JSON.parse(localStorage.getItem('btc-tx-v2')).map(t=>t.id);`)) === JSON.stringify(ids));
+
+// ── malformed rows must not blank the dashboard ──────────────────────────────
+console.log('\n[malformed data tolerance]');
+await seed({ 'btc-tx-v2': [tx({}), tx({ date:'garbage', amount:'0.5' }), tx({ totalUsd:'abc', date:'2024-03-01' })],
+             'btc-wallets': WALLETS });
+await reload();
+check('dashboard still renders', await evaluate(`return !!document.querySelector('.stats-grid');`));
+check('no NaN in any stat', !/NaN/.test(await evaluate(
+  `return [...document.querySelectorAll('.stat-value,.stat-sub')].map(e=>e.textContent).join('|');`)));
+check('no NaN in any chart path', await evaluate(
+  `return [...document.querySelectorAll('path')].every(p=>!/NaN|Infinity/.test(p.getAttribute('d')||''));`));
+
+// ── unregistered wallet names are surfaced ───────────────────────────────────
+console.log('\n[unregistered wallet names]');
+await seed({ 'btc-tx-v2': [tx({}), tx({ wallet:'Krakn', date:'2024-02-01' })], 'btc-wallets': [WALLETS[0]] });
+await reload();
+await clickByText('Wallets');
+await wait(1200);
+const wtext = await evaluate(`return document.body.innerText;`);
+check('orphaned wallet name is reported', /Unregistered Wallet Names/i.test(wtext) && /Krakn/.test(wtext));
+
+// ── transfer wizard must visit EVERY transfer ────────────────────────────────
+console.log('\n[transfer wizard sequencing]');
+const transfers = [1,2,3,4].map(i => tx({
+  id:'t'+i, type:'Transfer', date:`2024-0${i}-01`, wallet:'Kraken', wallet2:'',
+  amount:'0.01', price:'', totalUsd:'',
+}));
+await seed({ 'btc-tx-v2': [tx({ id:'buy1' }), ...transfers], 'btc-wallets': WALLETS });
+await reload();
+await clickByText('Dashboard');
+await wait(900);
+check('wizard launcher present', await evaluate(`
+  const b=[...document.querySelectorAll('button')].find(b=>/Fix Transfers/i.test(b.textContent));
+  if(!b) return false; b.click(); return true;`));
+await wait(800);
+await evaluate(`
+  const n=[...document.querySelectorAll('button')].find(b=>/Get Started|Start|Next/i.test(b.textContent));
+  if(n) n.click(); return 1;`);
+await wait(600);
+check('wizard reports all 4 transfers', /of 4/.test(
+  await evaluate(`return document.body.innerText.match(/Transfer \\d+ of \\d+/)?.[0] || '';`)));
+const seen = [];
+for (let step = 0; step < 4; step++) {
+  seen.push(await evaluate(`return document.body.innerText.match(/Transfer \\d+ of \\d+/)?.[0] || '';`));
+  await evaluate(`
+    const b=[...document.querySelectorAll('button')].find(x=>/Ledger/.test(x.textContent) && !/Kraken/.test(x.textContent));
+    if(b) b.click(); return 1;`);
+  await wait(250);
+  await evaluate(`
+    const n=[...document.querySelectorAll('button')].find(b=>/^\\s*(Next|Continue|Save & Next|Review)/i.test(b.textContent));
+    if(n) n.click(); return 1;`);
+  await wait(350);
+}
+check('visited 4 DISTINCT steps (regression: every other transfer was skipped)',
+  new Set(seen).size === 4, JSON.stringify(seen));
+check('never rendered a blank step', !seen.includes(''), JSON.stringify(seen));
+
+// ── chart geometry survives memoization ─────────────────────────────────────
+console.log('\n[chart geometry]');
+const prices = {};
+let p = 29000;
+for (let t = Date.UTC(2018, 0, 1); t <= Date.now(); t += 86400000) {
+  p = Math.max(3000, p * (1 + Math.sin(t / 9e8) * 0.02));
+  prices[new Date(t).toISOString().slice(0, 10)] = +p.toFixed(2);
+}
+const many = [];
+for (let i = 0; i < 40; i++) {
+  many.push(tx({ id:'m'+i, date: new Date(Date.UTC(2021,0,15) + i*30*86400000).toISOString().slice(0,10) }));
+}
+await seed({ 'btc-tx-v2': many, 'btc-wallets': WALLETS, 'btc-price-history-v1': prices });
+await reload(6000);
+const pathLen = () => evaluate(`
+  const ds=[...document.querySelectorAll('svg path')].map(p=>p.getAttribute('d')||'').filter(d=>d.length>10);
+  return { n: ds.length, len: ds.reduce((a,d)=>a+d.length,0), bad: ds.some(d=>/NaN|Infinity/.test(d)) };`);
+let g = await pathLen();
+check('charts render real geometry', g.n >= 3 && !g.bad, JSON.stringify(g));
+const allLen = g.len;
+await evaluate(`const b=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='3M'); if(b) b.click(); return 1;`);
+await wait(1500);
+g = await pathLen();
+check('range change invalidates the memo', g.len !== allLen && !g.bad, `All=${allLen} 3M=${g.len}`);
+// NB: two buttons read "All" (a wallet chip and the range button) — pick the 3M sibling.
+await evaluate(`
+  const three=[...document.querySelectorAll('button')].find(x=>x.textContent.trim()==='3M');
+  const all=three && [...three.parentElement.querySelectorAll('button')].find(x=>x.textContent.trim()==='All');
+  if(all) all.click(); return 1;`);
+await wait(1600);
+g = await pathLen();
+check('switching back restores the full series', g.len > 0 && g.len !== 0 && !g.bad, JSON.stringify(g));
+
+// ── modal keyboard handling ─────────────────────────────────────────────────
+console.log('\n[modal keyboard handling]');
+await clickByText('Dashboard');
+await wait(800);
+await evaluate(`
+  const b=[...document.querySelectorAll('button')].find(x=>/Add transaction/i.test(x.getAttribute('aria-label')||''));
+  if(b){ b.id='opener'; b.focus(); b.click(); } return 1;`);
+await wait(700);
+check('dialog has role + aria-modal + a label', await evaluate(`
+  const d=document.querySelector('[role="dialog"][aria-modal="true"]');
+  return !!d && !!document.getElementById(d.getAttribute('aria-labelledby'));`));
+check('focus moved inside the dialog', await evaluate(`
+  const d=document.querySelector('[role="dialog"]'); return !!d && d.contains(document.activeElement);`));
+let escaped = false;
+for (let i = 0; i < 30; i++) {
+  await press('Tab', 'Tab');
+  if (!(await evaluate(`const d=document.querySelector('[role="dialog"]'); return !!d && d.contains(document.activeElement);`))) {
+    escaped = true; break;
+  }
+}
+check('Tab is trapped inside the dialog', !escaped);
+await press('Escape', 'Escape');
+await wait(600);
+check('Escape closes a clean form', await evaluate(`return !document.querySelector('[role="dialog"]');`));
+check('body scroll released', await evaluate(`return document.body.style.overflow !== 'hidden';`));
+check('focus returned to the opening control', await evaluate(`return document.activeElement?.id === 'opener';`));
+
+// Dirty-form guard: React controlled inputs need the native setter to register a change
+await evaluate(`
+  const b=[...document.querySelectorAll('button')].find(x=>/Add transaction/i.test(x.getAttribute('aria-label')||''));
+  if(b) b.click(); return 1;`);
+await wait(600);
+await evaluate(`
+  const amt=[...document.querySelectorAll('[role="dialog"] input')].find(i=>i.type==='number');
+  if(!amt) return 0;
+  const setter=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
+  amt.focus(); setter.call(amt,'0.25'); amt.dispatchEvent(new Event('input',{bubbles:true}));
+  return 1;`);
+await wait(500);
+await press('Escape', 'Escape');
+await wait(600);
+check('a dirty form asks before discarding', /Discard changes/i.test(await evaluate(`return document.body.innerText;`)));
+check('the confirm stacks on top of the form',
+  (await evaluate(`return document.querySelectorAll('[role="dialog"]').length;`)) >= 2);
+await evaluate(`const b=[...document.querySelectorAll('button')].find(x=>/^Discard$/i.test(x.textContent.trim())); if(b) b.click(); return 1;`);
+await wait(700);
+check('body scroll released after nested dialogs',
+  await evaluate(`return document.body.style.overflow !== 'hidden';`));
+
+// ── monthly summary buckets ─────────────────────────────────────────────────
+// Monthly bars are positioned at mid-month for centring. That synthetic day used to leak into
+// the tooltip and the axis, and the range filter compared it against the cutoff — so a month
+// was kept or dropped wholesale, and a partially-in-range month vanished entirely.
+console.log('\n[monthly summary bucketing]');
+{
+  const today = new Date(await evaluate(`return new Date().toISOString().slice(0,10);`));
+  const ym = (d) => `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+  // Put one buy early and one late in the month that the 3M cutoff falls inside.
+  const edge = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 3, 1));
+  const edgeMonth = ym(edge);
+  const monthly = [
+    tx({ id:'early', date:`${edgeMonth}-03`, totalUsd:'111' }),
+    tx({ id:'late',  date:`${edgeMonth}-27`, totalUsd:'222' }),
+    tx({ id:'now',   date:`${ym(today)}-10`, totalUsd:'555' }),
+  ];
+  const readMonthly = () => evaluate(`
+    const svg=document.querySelector('svg[role="img"][aria-label^="Monthly Summary"]');
+    if(!svg) return null;
+    const bars=[...svg.querySelectorAll('rect')];
+    const b=bars[0].getBoundingClientRect(), r=svg.getBoundingClientRect();
+    svg.dispatchEvent(new MouseEvent('mousemove',{clientX:b.left+b.width/2,clientY:r.top+r.height/2,bubbles:true}));
+    return new Promise(res=>setTimeout(()=>{
+      const card=svg.closest('.card');
+      const labels=[...svg.querySelectorAll('text')].map(t=>t.textContent);
+      res({ tail: card.textContent.slice(-90), labels });
+    },400));`);
+
+  await seed({ 'btc-tx-v2': monthly, 'btc-wallets': WALLETS,
+               'btc-settings': { defaultTxType:'Buy', chartRange:'All', hiddenCharts:{} } });
+  await reload(6500);
+  const all = await readMonthly();
+  check('monthly chart renders', !!all, 'no Monthly Summary svg');
+  if (all) {
+    check('axis labels name months, not fabricated days',
+      all.labels.some(l => /^[A-Z][a-z]{2} \d{4}$/.test(l)) && !all.labels.some(l => /\d{2}\/\d{2}\/\d{4}/.test(l)),
+      JSON.stringify(all.labels));
+    check('tooltip shows the month, not a mid-month date',
+      /[A-Z][a-z]{2} \d{4}/.test(all.tail) && !/\/15\//.test(all.tail), all.tail);
+    check('range=All totals the whole month (111+222=333)', /\$333/.test(all.tail), all.tail);
+  }
+
+  await seed({ 'btc-tx-v2': monthly, 'btc-wallets': WALLETS,
+               'btc-settings': { defaultTxType:'Buy', chartRange:'3M', hiddenCharts:{} } });
+  await reload(6500);
+  const three = await readMonthly();
+  check('the partially-in-range month is NOT dropped', !!three, 'monthly chart disappeared at 3M');
+  if (three) {
+    check('range=3M counts only in-range activity in the edge month ($222, not $333)',
+      /\$222/.test(three.tail) && !/\$333/.test(three.tail), three.tail);
+  }
+}
+
+// ── accessible names ────────────────────────────────────────────────────────
+console.log('\n[accessible names]');
+check('no icon-only button without an accessible name', await evaluate(`
+  const bad=[...document.querySelectorAll('button')].filter(b=>{
+    const txt=(b.textContent||'').trim();
+    return !txt && !b.getAttribute('aria-label') && !b.getAttribute('aria-labelledby');
+  });
+  window.__bad=bad.map(b=>b.className||b.outerHTML.slice(0,70));
+  return bad.length===0;`), await evaluate(`return JSON.stringify(window.__bad||[]);`));
+check('every chart svg has a name', await evaluate(`
+  const s=[...document.querySelectorAll('svg[role="img"]')];
+  return s.length>0 && s.every(x=>(x.getAttribute('aria-label')||'').trim().length>0);`));
+
+// Offline price failures are expected in CI — they are warnings now, not errors
+const unexpected = errors.filter(e => !/Failed to fetch|price|Stored data unreadable/i.test(e));
+if (unexpected.length) {
+  console.log(`\nunexpected console errors: ${unexpected.length}`);
+  unexpected.slice(0, 8).forEach(e => console.log('  ✗ ' + e.slice(0, 250)));
+}
+
+const failed = report();
+close();
+process.exit(failed || unexpected.length ? 1 : 0);

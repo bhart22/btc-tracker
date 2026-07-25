@@ -28,7 +28,7 @@ A personal Bitcoin portfolio tracker that runs entirely in your browser. No serv
 
 ### Data & Privacy
 - **100% client-side** — All data stored in browser localStorage
-- **Google Drive sync** — Optional backup and cross-device sync using Drive's appDataFolder (only this app can access it); a local snapshot is kept before any sync pull overwrites local data
+- **Google Drive sync** — Optional backup and cross-device sync using Drive's appDataFolder (only this app can access it). A recovery snapshot is kept before anything replaces local data, and can be downloaded or restored from **Export → Recovery Snapshot**. If both devices changed independently, you're asked which copy to keep rather than one silently winning
 - **Inheritance vault** — Store encrypted notes (seed phrases, instructions) protected by a passphrase (AES-256-GCM, PBKDF2-SHA256 at 600k iterations)
 - **Hide values** — One-click privacy toggle blurs all financial data (BTC price charts remain visible)
 - **Export** — Full JSON backup/restore and CoinLedger-compatible CSV for tax reporting
@@ -37,19 +37,45 @@ A personal Bitcoin portfolio tracker that runs entirely in your browser. No serv
 ### Interface
 - **Light & dark themes** — Toggle in the sidebar
 - **BTC or sats display** — Show amounts in bitcoin or satoshis (Settings → Display Unit)
-- **Responsive design** — Desktop sidebar with collapse, mobile hamburger drawer
+- **Responsive design** — Desktop sidebar, mobile bottom navigation and hamburger drawer
+- **Keyboard & screen reader support** — All dialogs trap focus, close on Escape, and restore focus; charts and icon-only controls carry accessible names
 - **Expandable charts** — Click any chart to view a larger modal version
 - **Customizable settings** — Two-column masonry layout with chart visibility, ordering, MA line toggles, and more
 - **Offline support** — Service worker caches the app and its dependencies, so it loads without a connection (live prices still need network)
 
+- **Crash recovery** — If the app fails to start or a render throws, you get a page with a "Download my data" button rather than a blank screen
+
 ## Tech Stack
 
 - **React 18** with Babel in-browser transpilation (version-pinned CDN scripts with SRI)
-- **Single HTML file** — No build step, no bundler, no dependencies to install
+- **Single HTML file** — No build step, no bundler, nothing to install to run it
 - **SVG charts** — Custom-built charting with no library dependencies
 - **Coinbase API** — Daily BTC-USD candles for historical price data
 - **Google Identity Services** — OAuth for optional Drive sync
 - **CSS custom properties** — Theming with light/dark mode
+
+### Tests & optional tooling
+
+`app.html` runs as-is with no build step — nothing in `tools/` is needed to run or deploy the
+app. It exists so the money maths can be checked and the assets regenerated:
+
+```bash
+npm install          # devDependencies only
+
+npm run check        # parse the JSX block (a syntax error = blank page, so check first)
+npm test             # check + pure-function tests (dates, cost basis inputs, base64, MA oracle)
+npm run test:browser # end-to-end smoke test in headless Chrome
+npm run test:all     # everything
+
+npm run images       # regenerate the small logo variants from the full-res masters
+npm run qr           # regenerate the Tip Jar QR PNGs (re-run if a tip address changes)
+```
+
+`npm test` needs no browser and takes a couple of seconds. It extracts the pure helpers
+straight out of `app.html`, so there is no duplicated copy to drift, and it keeps the original
+naive moving-average implementation as an oracle to prove the fast version returns identical
+numbers. `npm run test:browser` drives real Chrome over the DevTools protocol — no Puppeteer —
+and skips cleanly if no browser is installed (set `CHROME_PATH` to point at one).
 
 ## Getting Started
 
@@ -75,7 +101,9 @@ Since it's a single HTML file, you can also host it anywhere:
 
 ### Deploying updates
 
-Pages are served network-first by the service worker, so content changes to `app.html`/`index.html` propagate on the next load automatically. However, if you change the caching logic in `sw.js` itself, bump the `CACHE_NAME` constant (e.g. `satledger-v1` → `satledger-v2`) so the new worker evicts the old cache on activation.
+Pages are served network-first by the service worker, so content changes to `app.html`/`index.html` propagate on the next load automatically. However, if you change the caching logic **or the precache list** in `sw.js`, bump the `CACHE_NAME` constant (e.g. `satledger-v2` → `satledger-v3`) so the new worker evicts the old cache on activation.
+
+The precache list is split into `CRITICAL_URLS` (atomic — if these can't be fetched the install *should* fail) and `OPTIONAL_URLS` (added individually, so one blocked CDN can't silently disable offline support altogether).
 
 ## Tips
 
