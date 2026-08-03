@@ -3698,6 +3698,42 @@ function App() {
     return h;
   }, [transactions]);
 
+  // ─── Running per-wallet balance after each transaction ───────────────────
+  // tx id → { walletName: satsAfterThatTransaction }. Built from ALL transactions in
+  // chronological order — the exact reverse of the list's own sort — so the figure a row
+  // shows is its true balance at that point in history and never shifts when a filter,
+  // search or page changes. Type semantics mirror walletHoldings above; keep the two in step.
+  //
+  // Accumulated in whole satoshis, not floats: summing hundreds of 0.0000xxxx rewards leaves
+  // residue in the low decimals, and a column whose whole job is making a mistyped reward
+  // obvious can't afford to invent digit-level noise of its own.
+  const runningBalances = useMemo(() => {
+    const chrono = transactions
+      .map((tx, i) => ({ tx, i }))
+      .sort((a, b) => a.tx.date.localeCompare(b.tx.date) || a.i - b.i);
+    const toSats = v => Math.round(numOr(v) * 1e8);
+    const bal = {};
+    const out = {};
+    chrono.forEach(({ tx }) => {
+      const amt = toSats(tx.amount), fee = toSats(tx.fee);
+      const w1 = tx.wallet, w2 = tx.wallet2;
+      if(!w1) return;
+      if(!bal[w1]) bal[w1] = 0;
+      if(tx.type==='Buy'||tx.type==='Reward') { bal[w1] += amt; }
+      else if(tx.type==='Sell') { bal[w1] -= amt; }
+      else if(tx.type==='Transfer') {
+        bal[w1] -= (amt + fee);
+        if(w2) { if(!bal[w2]) bal[w2] = 0; bal[w2] += amt; }
+      } else if(tx.type==='Consolidation') { bal[w1] -= fee; }
+      // Both sides of a transfer are recorded so the column can follow whichever wallet the
+      // user is filtering on, rather than always reporting the source.
+      const after = { [w1]: bal[w1] };
+      if(w2 && tx.type==='Transfer') after[w2] = bal[w2];
+      out[tx.id] = after;
+    });
+    return out;
+  }, [transactions]);
+
   // Total holdings = only ACTIVE wallets (archived wallets hidden from dashboard)
   const trackedHoldings = useMemo(() => {
     const walletSet = new Set(activeWallets.map(w => w.name));
@@ -3760,6 +3796,8 @@ function App() {
 
   // ─── Filtered transactions ────────────────────────────────────────────────
   const filtered = useMemo(() => {
+    // Insertion order, used as the same-day tie-break below.
+    const order = new Map(transactions.map((tx, i) => [tx, i]));
     return transactions.filter(tx => {
       if(filterType!=='All' && tx.type!==filterType) return false;
       if(filterWallet!=='All' && tx.wallet!==filterWallet && tx.wallet2!==filterWallet) return false;
@@ -3773,11 +3811,26 @@ function App() {
               tx.type?.toLowerCase().includes(q) || tx.amount?.includes(q) )) return false;
       }
       return true;
-    }).sort((a,b)=>b.date.localeCompare(a.date));
+    // Newest first. Date alone left same-day rows in insertion order, so each day's block
+    // read oldest-first inside an otherwise newest-first list — the most recently added
+    // transaction sank to the bottom of its day. Reverse the insertion order on ties so the
+    // whole list reads consistently newest → oldest.
+    }).sort((a,b)=> b.date.localeCompare(a.date) || order.get(b) - order.get(a));
   }, [transactions, filterType, filterWallet, filterYear, filterDateFrom, filterDateTo, search]);
 
   const years = useMemo(() => [...new Set(transactions.map(t=>t.date.slice(0,4)))].sort().reverse(), [transactions]);
   const walletNames = useMemo(() => [...new Set(transactions.flatMap(t=>[t.wallet,t.wallet2].filter(Boolean)))].sort(), [transactions]);
+
+  // Which wallet's running balance a row shows: the one being filtered on when a filter is
+  // active (so a transfer INTO that wallet reports its side, not the source's), otherwise the
+  // row's own From Wallet. Rows with no wallet have no balance to report.
+  const balanceFor = tx => {
+    const after = runningBalances[tx.id];
+    if(!after) return null;
+    const name = (filterWallet!=='All' && after[filterWallet]!==undefined) ? filterWallet : tx.wallet;
+    if(!name || after[name]===undefined) return null;
+    return { wallet: name, btc: after[name]/1e8, negative: after[name] < 0 };
+  };
 
   const paged = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
   const totalPages = Math.max(1, Math.ceil(filtered.length/PAGE_SIZE));
@@ -4506,6 +4559,7 @@ function App() {
                 <div className="tx-cards">
                   {paged.map((tx,i)=>{
                     const total = numOr(tx.totalUsd, numOr(tx.amount)*numOr(tx.price));
+                    const bal = balanceFor(tx);
                     return (
                       <div key={tx.id} className="tx-card" style={tx.excludeStats?{opacity:.5}:{}}>
                         <div className="tx-card-row">
@@ -4549,6 +4603,12 @@ function App() {
                             <div className="tx-card-val mono" style={{color:'var(--text-secondary)'}}>{tx.type==='Transfer'||tx.type==='Consolidation'?`${fmtBTC(tx.fee)} ${btcUnit()}`:fmtUSD(tx.fee)}</div>
                           </div>
                         </div>}
+                        {bal && (
+                          <div className="tx-card-row" style={{marginTop:'.5rem',paddingTop:'.5rem',borderTop:'1px solid var(--border-color)'}}>
+                            <div className="tx-card-label">{bal.wallet} balance</div>
+                            <div className="tx-card-val mono" style={{color:bal.negative?'var(--red)':'var(--text-secondary)'}}>{fmtBTC(bal.btc)} {btcUnit()}</div>
+                          </div>
+                        )}
                         {tx.notes && <div style={{marginTop:'.375rem',fontSize:'.75rem',color:'var(--text-tertiary)'}}>{tx.notes}</div>}
                       </div>
                     );
@@ -4565,6 +4625,7 @@ function App() {
                         <th>From Wallet</th>
                         <th>To Wallet</th>
                         <th>Amount ({btcUnit()})</th>
+                        <th title="Wallet balance immediately after this transaction. Always computed from every transaction, so filters and paging don't change it.">Balance ({btcUnit()})</th>
                         <th className="desktop-only">Price/BTC</th>
                         <th className="desktop-only">Total USD</th>
                         <th className="desktop-only">Fee</th>
@@ -4575,6 +4636,7 @@ function App() {
                     <tbody>
                       {paged.map((tx,i)=>{
                         const total = numOr(tx.totalUsd, numOr(tx.amount)*numOr(tx.price));
+                        const bal = balanceFor(tx);
                         return (
                           <tr key={tx.id} style={tx.excludeStats?{opacity:.5}:{}}>
                             <td style={{whiteSpace:'nowrap',fontSize:'.8125rem'}}>{fmtDate(tx.date)}</td>
@@ -4585,6 +4647,10 @@ function App() {
                             <td style={{fontWeight:500}}>{tx.wallet||'—'}</td>
                             <td style={{color:'var(--text-secondary)'}}>{tx.wallet2||'—'}</td>
                             <td className="mono" style={{fontWeight:600}}>{fmtBTC(tx.amount)}</td>
+                            <td className="mono" title={bal ? `${bal.wallet} balance after this transaction` : undefined}
+                                style={{fontSize:'.8125rem',color:bal ? (bal.negative?'var(--red)':'var(--text-secondary)') : 'var(--text-tertiary)',fontWeight:bal&&bal.negative?600:400}}>
+                              {bal ? fmtBTC(bal.btc) : '—'}
+                            </td>
                             <td className="mono desktop-only">{tx.price && parseFloat(tx.price)>0 ? fmtUSD(tx.price) : '—'}</td>
                             <td className="mono desktop-only">{total>0 ? fmtUSD(total) : '—'}</td>
                             <td className="mono desktop-only" style={{fontSize:'.75rem',color:'var(--text-secondary)'}}>
