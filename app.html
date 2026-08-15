@@ -170,13 +170,26 @@
 
       // expectedModifiedTime: abort rather than overwrite if Drive has moved on since we last
       // saw it. A check-then-act race remains, but the window shrinks from hours to millis.
-      async push(data, expectedModifiedTime) {
+      //
+      // opts.urgent marks a push issued while the page is being hidden or torn down. The
+      // document can die at ANY await, so an urgent push trades two safety features for a
+      // chance of landing at all:
+      //   - it skips the findFile() round-trip and reuses the cached fileId, removing a whole
+      //     request from the critical path;
+      //   - it sets keepalive on the upload so the browser finishes it after the page is gone.
+      // The cost is that conflict detection goes stale (modifiedTime is not re-read), so an
+      // urgent push can overwrite a foreign write. That is the deliberate trade: the pending
+      // marker survives in localStorage either way, and the next launch reconciles. Losing the
+      // edit outright — the old behaviour — is strictly worse than a detectable overwrite.
+      async push(data, expectedModifiedTime, opts={}) {
+        const urgent = !!opts.urgent;
         await this.ensureToken();
         const body = JSON.stringify(data);
-        dlog('[GDrive] push:', data?.transactions?.length, 'transactions', data?.vault ? 'with vault' : 'without vault');
+        dlog('[GDrive] push:', data?.transactions?.length, 'transactions', data?.vault ? 'with vault' : 'without vault', urgent ? '(urgent)' : '');
 
-        // Always search for existing file first (also refreshes modifiedTime)
-        await this.findFile();
+        // Search for the existing file first (also refreshes modifiedTime). Skipped for an
+        // urgent push that already knows the fileId.
+        if(!urgent || !this.fileId) await this.findFile();
 
         if(this.fileId) {
           if(expectedModifiedTime && this.modifiedTime && this.modifiedTime !== expectedModifiedTime) {
@@ -186,9 +199,15 @@
             throw err;
           }
           dlog('[GDrive] push: updating existing file', this.fileId);
+          // keepalive is capped at 64KB per browser spec, and the cap covers the whole request.
+          // Over that the request is rejected outright, so fall back to a normal fetch and let
+          // the retry queue cover it.
+          const useKeepalive = urgent && (() => {
+            try { return new Blob([body]).size < 60000; } catch { return body.length < 60000; }
+          })();
           const r = await this._fetch(
             `https://www.googleapis.com/upload/drive/v3/files/${this.fileId}?uploadType=media&fields=id,modifiedTime`,
-            { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body }
+            { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body, ...(useKeepalive ? { keepalive: true } : {}) }
           );
           if(!r.ok) { console.error('[GDrive] push update failed:', r.status); if(DEBUG) console.error(await r.text()); throw new Error('push failed'); }
           const res = await r.json().catch(() => null);
@@ -860,6 +879,11 @@ const PRELOADED_TRANSACTIONS = [];
 const DEFAULT_WALLETS = [];
 
 const PAGE_SIZE = 50;
+// Backoff for a Drive push that failed on transport. A failure used to be terminal — syncState
+// went red and nothing ever resent, so the edit sat in localStorage until the user happened to
+// sign in again. drive_changed is deliberately NOT retried: it is a real conflict, not a blip,
+// and retrying it would be exactly the clobber the check exists to prevent.
+const PUSH_RETRY_DELAYS = [2000, 8000, 30000];
 function useThrottledCallback(fn, delay) {
   const lastRun = React.useRef(0);
   const frameRef = React.useRef(null);
@@ -1078,6 +1102,13 @@ const vaultSectionDefs = [
 const safeSetItem = (key, value) => {
   try { localStorage.setItem(key, value); return true; }
   catch(e) { console.error('localStorage write failed:', key, e); return false; }
+};
+// Key-order-independent stringify, for comparing two settings objects that were built by
+// different code paths. Plain JSON.stringify would call {a:1,b:2} and {b:2,a:1} different.
+const stableStringify = (v) => {
+  if(v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+  if(Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
 };
 // Keep one recoverable snapshot of local data before a Drive pull overwrites it
 const stashPreSyncSnapshot = () => {
@@ -3053,53 +3084,108 @@ function App() {
 
   // ─── Drive push queue ─────────────────────────────────────────────────────
   // The push is debounced 1500ms. Closing or backgrounding the tab inside that window used to
-  // leave local stamped newer than Drive while Drive kept the older copy — after which
-  // another device would pull stale data and push it over the newer local. Two defences:
-  // a best-effort flush on hide, and a dirty marker that survives if the flush is killed.
+  // leave local stamped newer than Drive while Drive kept the older copy — after which another
+  // device would pull stale data and push it over the newer local. Four defences, in order of
+  // how early they catch it: a keepalive flush on hide that can outlive the document, a retry
+  // ladder for transport failures, a resume on regaining focus or network, and a dirty marker
+  // that survives in localStorage so the next launch can finish the job.
   const pendingPushRef = useRef(null);
-  const performDrivePush = React.useCallback(async (payload) => {
+  const retryTimerRef = useRef(null);
+  const retryAttemptRef = useRef(0);
+  const performDrivePush = React.useCallback(async (payload, opts={}) => {
     const expected = localStorage.getItem('btc-drive-seen-mtime') || '';
+    if(retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
     try {
-      await GDriveSync.push(payload, expected || undefined);
+      await GDriveSync.push(payload, expected || undefined, { urgent: !!opts.urgent });
       pendingPushRef.current = null;
+      retryAttemptRef.current = 0;
       localStorage.removeItem('btc-pending-push');
       setSyncState('synced');
       setLastSync(new Date());
     } catch(e) {
       if(e && e.code === 'drive_changed') {
-        // Another device wrote since we last saw this file. Refuse to clobber it and leave
-        // btc-pending-push set, so the conflict is surfaced instead of resolved silently.
+        // A keepalive push can land without us ever seeing the response — the page was being
+        // torn down. That leaves btc-drive-seen-mtime stale, so our OWN write looks foreign on
+        // the next attempt. Read the file back before crying conflict: if it already carries
+        // this payload's stamp, the push succeeded and we just adopt the new revision.
+        try {
+          const remote = await GDriveSync.pull();
+          if(remote && payload.lastModified && remote.lastModified === payload.lastModified) {
+            dlog('[GDrive] drive_changed was our own completed keepalive push — adopting');
+            pendingPushRef.current = null;
+            retryAttemptRef.current = 0;
+            localStorage.removeItem('btc-pending-push');
+            if(remote._driveModifiedTime) safeSetItem('btc-drive-seen-mtime', remote._driveModifiedTime);
+            setSyncState('synced');
+            setLastSync(new Date());
+            return;
+          }
+        } catch(verifyErr) { console.warn('Could not verify drive_changed:', verifyErr); }
+        // Another device really did write since we last saw this file. Refuse to clobber it and
+        // leave btc-pending-push set, so the conflict is surfaced instead of resolved silently.
         console.warn('Drive changed since last sync — push aborted rather than overwriting');
+        retryAttemptRef.current = 0;
         setSyncState('error');
         showToast('⚠ Google Drive was changed on another device. Your edit is saved locally — open Settings → Cloud Sync to resolve.', 10000);
         return;
       }
       console.error('Sync push failed:', e);
       setSyncState('error');
+      const attempt = retryAttemptRef.current;
+      if(attempt < PUSH_RETRY_DELAYS.length && pendingPushRef.current) {
+        retryAttemptRef.current = attempt + 1;
+        retryTimerRef.current = setTimeout(() => {
+          retryTimerRef.current = null;
+          if(pendingPushRef.current) performDrivePush(pendingPushRef.current);
+        }, PUSH_RETRY_DELAYS[attempt]);
+      } else {
+        // Out of in-session retries. btc-pending-push stays set, so the next launch resends it.
+        retryAttemptRef.current = 0;
+        showToast('⚠ Could not reach Google Drive. Your change is saved on this device and will sync when you reconnect.', 8000);
+      }
     }
   }, []);
   const queueDrivePush = React.useCallback((payload) => {
-    if(!GDriveSync.isSignedIn()) return;
+    // The dirty marker is set even when signed out. It used to sit below the isSignedIn() bail,
+    // so an edit made with no token left btc-last-modified advanced but nothing marked dirty —
+    // and the conflict dialog, which keys off that marker, could never fire for it.
     pendingPushRef.current = payload;
     safeSetItem('btc-pending-push', payload.lastModified || new Date().toISOString());
+    if(!GDriveSync.isSignedIn()) return;
     if(syncDebounce.current) clearTimeout(syncDebounce.current);
+    retryAttemptRef.current = 0;
     setSyncState('syncing');
     syncDebounce.current = setTimeout(() => {
       if(pendingPushRef.current) performDrivePush(pendingPushRef.current);
     }, 1500);
   }, [performDrivePush]);
   useEffect(() => {
+    // urgent: the document may be torn down at any await from here on. See GDriveSync.push.
     const flush = () => {
       if(!pendingPushRef.current) return;
+      if(!GDriveSync.isSignedIn()) return;
       if(syncDebounce.current) { clearTimeout(syncDebounce.current); syncDebounce.current = null; }
+      performDrivePush(pendingPushRef.current, { urgent: true });
+    };
+    // Coming back online, or back to the tab, is the natural moment to drain anything the
+    // retry ladder gave up on — including an urgent push whose response never arrived.
+    const resume = () => {
+      if(!pendingPushRef.current || !GDriveSync.isSignedIn()) return;
+      if(retryTimerRef.current) return;
+      retryAttemptRef.current = 0;
       performDrivePush(pendingPushRef.current);
     };
-    const onVisibility = () => { if(document.visibilityState === 'hidden') flush(); };
+    const onVisibility = () => {
+      if(document.visibilityState === 'hidden') flush(); else resume();
+    };
     window.addEventListener('pagehide', flush);
+    window.addEventListener('online', resume);
     document.addEventListener('visibilitychange', onVisibility);
     return () => {
       window.removeEventListener('pagehide', flush);
+      window.removeEventListener('online', resume);
       document.removeEventListener('visibilitychange', onVisibility);
+      if(retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, [performDrivePush]);
 
@@ -3404,14 +3490,57 @@ function App() {
     if(successMessage) showToast(successMessage);
   }, []);
 
+  // What actually differs between this device and Drive. The dialog used to report transaction
+  // counts and nothing else, so a divergence confined to wallets, preferences, or the vault
+  // rendered as "47 here, 47 on Drive" — a prompt that reads like a no-op while one side is
+  // about to be discarded. A wallet added on the other device looked exactly like nothing.
+  const describeSyncDifference = useCallback((remote) => {
+    const rows = [];
+    const localTxs = transactionsRef.current || [];
+    const remoteTxs = Array.isArray(remote?.transactions) ? remote.transactions : [];
+    if(localTxs.length !== remoteTxs.length) {
+      rows.push({ label:'Transactions', local:String(localTxs.length), remote:String(remoteTxs.length) });
+    }
+    const localWals = walletsRef.current || [];
+    const remoteWals = Array.isArray(remote?.wallets) ? remote.wallets : [];
+    const nameOf = w => String(w?.name||'').trim();
+    const localNames = new Set(localWals.map(nameOf).filter(Boolean));
+    const remoteNames = new Set(remoteWals.map(nameOf).filter(Boolean));
+    const onlyLocal = [...localNames].filter(n => !remoteNames.has(n));
+    const onlyRemote = [...remoteNames].filter(n => !localNames.has(n));
+    if(onlyLocal.length || onlyRemote.length || localWals.length !== remoteWals.length) {
+      rows.push({
+        label: 'Wallets',
+        local: `${localWals.length}${onlyLocal.length ? ` — only here: ${onlyLocal.join(', ')}` : ''}`,
+        remote: `${remoteWals.length}${onlyRemote.length ? ` — only on Drive: ${onlyRemote.join(', ')}` : ''}`,
+      });
+    }
+    const localVault = !!vaultRef.current, remoteVault = !!remote?.vault;
+    if(localVault !== remoteVault) {
+      rows.push({ label:'Vault', local: localVault?'present':'none', remote: remoteVault?'present':'none' });
+    }
+    let settingsDiffer = false;
+    try {
+      const localSet = normalizeSettings(JSON.parse(localStorage.getItem('btc-settings')||'{}'));
+      const remoteSet = normalizeSettings(remote?.settings || {});
+      settingsDiffer = stableStringify(localSet) !== stableStringify(remoteSet);
+    } catch { settingsDiffer = true; }
+    if(settingsDiffer) rows.push({ label:'Preferences', local:'differ', remote:'differ' });
+    return rows;
+  }, []);
+
   // Both sides changed independently. Make it the user's call instead of letting a clock
   // comparison silently discard one device's work.
-  const resolveSyncConflict = useCallback((remote, localTxCount, remoteTxCount) => {
+  const resolveSyncConflict = useCallback((remote) => {
     setSyncState('error');
     const remoteWhen = remote.lastModified ? new Date(remote.lastModified).toLocaleString() : 'unknown time';
+    const rows = describeSyncDifference(remote);
+    const remoteTxCount = Array.isArray(remote.transactions) ? remote.transactions.length : 0;
     setConfirmDialog({
       title: 'Sync Conflict',
-      message: `This device has ${localTxCount} transaction${localTxCount===1?'':'s'} with unsynced changes, and Google Drive has ${remoteTxCount} (last written ${remoteWhen}) from another device. Choose which copy to keep — a recovery snapshot of this device's data is saved either way, under Export → Backup & Restore.`,
+      message: `This device has changes that never reached Google Drive, and Drive was last written ${remoteWhen} from another device. Choose which copy to keep — a recovery snapshot of this device's data is saved either way, under Export → Backup & Restore.`,
+      details: rows,
+      detailsEmptyText: 'No differences detected between the two copies — either choice should be safe.',
       confirmLabel: 'Use Google Drive copy',
       cancelLabel: 'Keep this device',
       danger: true,
@@ -3430,13 +3559,14 @@ function App() {
         setSnapshotNonce(n => n+1);
         setSyncState('syncing');
         try {
+          const localTxCount = (transactionsRef.current||[]).length;
           await pushLocalToDrive(`Kept this device's ${localTxCount} transaction${localTxCount===1?'':'s'} and overwrote Google Drive`);
           setSyncState('synced');
           setLastSync(new Date());
         } catch { setSyncState('error'); showToast('Could not overwrite Google Drive'); }
       },
     });
-  }, [applyRemotePayload, pushLocalToDrive]);
+  }, [applyRemotePayload, pushLocalToDrive, describeSyncDifference]);
 
   const handleSignIn = useCallback(async () => {
     try {
@@ -3484,7 +3614,7 @@ function App() {
           // Remote is empty, local has data — push up
           await pushLocalToDrive('Backed up to Google Drive');
         } else if(localDirty && remoteMoved) {
-          resolveSyncConflict(remote, localTxCount, remoteTxCount);
+          resolveSyncConflict(remote);
           return; // the dialog owns syncState from here
         } else if(remoteMod > localMod) {
           // Remote is newer — pull, keeping a local snapshot in case this overwrites unsynced work
@@ -3533,8 +3663,18 @@ function App() {
         try {
           const ready = await GDriveSync.init();
           if(!ready) { setSyncState('disconnected'); return; }
-          // If we have a cached valid token, use it directly
-          if(GDriveSync.isTokenValid()) {
+          // The token lives in sessionStorage, so it is ALWAYS absent on a fresh launch — new
+          // tab, PWA relaunch, or a different device. Gating the pull on isTokenValid() alone
+          // therefore meant the automatic "pull first on reconnect" never once ran: the app
+          // booted on stale localStorage, reported disconnected, and the next edit pushed that
+          // stale state over whatever the other device had written. Try the silent grant first
+          // and only fall back to disconnected if Google actually refuses.
+          let haveToken = GDriveSync.isTokenValid();
+          if(!haveToken) {
+            try { await GDriveSync.requestToken(false); haveToken = GDriveSync.isTokenValid(); }
+            catch(e) { dlog('[GDrive] silent token refresh declined:', e); haveToken = false; }
+          }
+          if(haveToken) {
             setSyncState('syncing');
             const remote = await GDriveSync.pull();
             if(remote && remote.lastModified) {
@@ -3542,13 +3682,19 @@ function App() {
               const localDirty = !!localStorage.getItem('btc-pending-push');
               const seenMtime = localStorage.getItem('btc-drive-seen-mtime') || '';
               const remoteMoved = !!(remote._driveModifiedTime && seenMtime && remote._driveModifiedTime !== seenMtime);
-              if(localDirty && remoteMoved) {
+              // Our own last push may have landed without us seeing the response (keepalive on
+              // page-hide). Same stamp on both sides means there is nothing to reconcile.
+              const alreadyLanded = remote.lastModified === localMod;
+              if(alreadyLanded && localDirty) {
+                pendingPushRef.current = null;
+                localStorage.removeItem('btc-pending-push');
+                if(remote._driveModifiedTime) safeSetItem('btc-drive-seen-mtime', remote._driveModifiedTime);
+              } else if(localDirty && remoteMoved) {
                 // Two-sided conflict — ask, don't guess. Bail out before touching syncState
                 // so the dialog owns it.
-                resolveSyncConflict(remote, transactionsRef.current.length, remote.transactions?.length || 0);
+                resolveSyncConflict(remote);
                 return;
-              }
-              if(remote.lastModified > localMod) {
+              } else if(remote.lastModified > localMod) {
                 applyRemotePayload(remote, { stash: true });
               } else if(localDirty) {
                 // We have an edit that never reached Drive and nothing else has moved — send it
@@ -3558,7 +3704,7 @@ function App() {
             setSyncState('synced');
             setLastSync(new Date());
           } else {
-            // Token expired — show as disconnected, user can re-sign-in
+            // No grant available without user interaction — the sign-in button is the way back.
             setSyncState('disconnected');
           }
         } catch(e) {
@@ -5920,6 +6066,30 @@ function App() {
           >
             <div className="modal-body">
               <p style={{fontSize:'.9375rem',color:'var(--text-secondary)',lineHeight:1.6}}>{confirmDialog.message}</p>
+              {/* Optional this-device vs Drive breakdown. Only the sync conflict uses it — a
+                  choice between two copies is unmakeable without seeing what differs. */}
+              {confirmDialog.details && (
+                confirmDialog.details.length === 0 ? (
+                  <p style={{fontSize:'.8125rem',color:'var(--text-tertiary)',marginTop:'.75rem'}}>
+                    {confirmDialog.detailsEmptyText || 'No differences detected.'}
+                  </p>
+                ) : (
+                  <div style={{marginTop:'.875rem',border:'1px solid var(--border-color)',borderRadius:8,overflow:'hidden'}}>
+                    <div style={{display:'grid',gridTemplateColumns:'minmax(80px,auto) 1fr 1fr',gap:0,fontSize:'.75rem'}}>
+                      <div style={{padding:'.4rem .625rem',fontWeight:600,background:'var(--bg-tertiary)',color:'var(--text-secondary)'}}></div>
+                      <div style={{padding:'.4rem .625rem',fontWeight:600,background:'var(--bg-tertiary)',color:'var(--text-secondary)'}}>This device</div>
+                      <div style={{padding:'.4rem .625rem',fontWeight:600,background:'var(--bg-tertiary)',color:'var(--text-secondary)'}}>Google Drive</div>
+                      {confirmDialog.details.map(row => (
+                        <React.Fragment key={row.label}>
+                          <div style={{padding:'.4rem .625rem',fontWeight:600,borderTop:'1px solid var(--border-color)'}}>{row.label}</div>
+                          <div style={{padding:'.4rem .625rem',borderTop:'1px solid var(--border-color)',wordBreak:'break-word'}}>{row.local}</div>
+                          <div style={{padding:'.4rem .625rem',borderTop:'1px solid var(--border-color)',wordBreak:'break-word'}}>{row.remote}</div>
+                        </React.Fragment>
+                      ))}
+                    </div>
+                  </div>
+                )
+              )}
             </div>
             <div className="modal-footer">
               <button type="button" className="btn btn-secondary" onClick={confirmDialog.onCancel || (()=>setConfirmDialog(null))}>

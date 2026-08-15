@@ -71,6 +71,27 @@ await wait(1200);
 const wtext = await evaluate(`return document.body.innerText;`);
 check('orphaned wallet name is reported', /Unregistered Wallet Names/i.test(wtext) && /Krakn/.test(wtext));
 
+// ── an edit made while signed out is still marked dirty ──────────────────────
+// queueDrivePush used to bail on !isSignedIn() BEFORE writing btc-pending-push, so an edit made
+// with no Drive token advanced btc-last-modified but left nothing marked dirty. The sync
+// conflict dialog keys off that marker, so it could never fire for exactly the edits most
+// likely to be lost — the ones made on a device that had not reconnected yet.
+console.log('\n[offline edits are marked dirty]');
+await seed({ 'btc-tx-v2': [tx({})], 'btc-wallets': WALLETS });
+await reload();
+await clickByText('Wallets');
+await wait(900);
+check('archive control present', await evaluate(`
+  const b=document.querySelector('button[aria-label="Archive wallet"]');
+  if(!b) return false; b.click(); return true;`));
+await wait(600);
+check('the edit reached localStorage', await evaluate(
+  `return JSON.parse(localStorage.getItem('btc-wallets')).some(w=>w.archived===true);`));
+check('btc-pending-push is set even with no Drive token',
+  await evaluate(`return !!localStorage.getItem('btc-pending-push');`));
+check('btc-last-modified advanced alongside it',
+  await evaluate(`return !!localStorage.getItem('btc-last-modified');`));
+
 // ── transfer wizard must visit EVERY transfer ────────────────────────────────
 console.log('\n[transfer wizard sequencing]');
 const transfers = [1,2,3,4].map(i => tx({
